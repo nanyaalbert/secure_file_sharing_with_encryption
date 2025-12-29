@@ -23,6 +23,7 @@ import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
@@ -35,12 +36,13 @@ import java.util.stream.Stream;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyAgreement;
-import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.interfaces.DHPrivateKey;
 import javax.crypto.interfaces.DHPublicKey;
 import javax.crypto.spec.DHParameterSpec;
 import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.OAEPParameterSpec;
+import javax.crypto.spec.PSource;
 import javax.crypto.spec.SecretKeySpec;
 
 public class SecureFileSharingServerWithEncryption {
@@ -120,9 +122,8 @@ public class SecureFileSharingServerWithEncryption {
             System.out.println("Please setup a password for the server.");
             System.out.println("Enter password: ");
             HANDSHAKE_STRING += userInput.nextLine();
-            System.out.println("\nWaiting for connections...");
-            CurrentSession serverKeySession = new CurrentSession(); // remove this and also as an attachment
-            serverChannel.register(selector, SelectionKey.OP_ACCEPT, serverKeySession);
+            System.out.println("\nWaiting for connections..."); // remove this and also as an attachment
+            serverChannel.register(selector, SelectionKey.OP_ACCEPT);
 
             while (true) {
                 if (selector.select() == 0)
@@ -139,17 +140,9 @@ public class SecureFileSharingServerWithEncryption {
                     if (key.isAcceptable()) {
                         ServerSocketChannel readyServer = (ServerSocketChannel) key.channel();
                         SocketChannel clientChannel = readyServer.accept();
-                        // CurrentSession keySession = (CurrentSession) key.attachment();
                         clientChannel.configureBlocking(false);
                         CurrentSession currentClientSession = new CurrentSession();
                         currentClientSession.progressState = Progress.JUST_CONNECTED;
-                        // remove this later
-                        // byte[] encryptedHandShake = keySession
-                        // .encrypt(HANDSHAKE_STRING.getBytes(StandardCharsets.UTF_8));
-                        currentClientSession.handShakeSendBuffer = ByteBuffer
-                                .wrap(encryptedHandShake); // edit after updating the handshake encryption method
-                        currentClientSession.handShakeSendLengthBuffer
-                                .putInt(currentClientSession.handShakeSendBuffer.capacity());
                         clientChannel.register(selector, SelectionKey.OP_READ, currentClientSession);
                         System.out.println("Client " + clientChannel.getRemoteAddress() + " just connected");
                     }
@@ -158,8 +151,17 @@ public class SecureFileSharingServerWithEncryption {
                         SocketChannel readyClient = (SocketChannel) key.channel();
                         CurrentSession keySession = (CurrentSession) key.attachment();
 
-                        switch (keySession.progressState) { // remember to add all the other cases for this enum                            
-                            case Progress.JUST_CONNECTED, Progress.READY_TO_READ_HANDSHAKE, Progress.READING_HANDSHAKE -> {
+                        switch (keySession.progressState) {
+                            case Progress.JUST_CONNECTED, Progress.READY_TO_READ_HANDSHAKE,
+                                    Progress.READING_HANDSHAKE -> {
+                                // Kills any connection that does not complete handshake send in 16 seconds
+                                long currentTime = System.currentTimeMillis();
+                                if (currentTime - keySession.connectTime > 16000) {
+                                    System.err.println("Client " + readyClient.getRemoteAddress()
+                                            + " took too long to complete handshake. disconnecting...");
+                                    cancelKey(key);
+                                    return;
+                                }
                                 readHandShake(key);
                             }
                             case Progress.WRITING_HANDSHAKE -> {
@@ -229,11 +231,11 @@ public class SecureFileSharingServerWithEncryption {
                 int bytesRead;
                 handShakeLength = keySession.handShakeReceiveLengthBuffer.getInt();
                 /*
-                    this is encrypted and contains 
-                    the nonce at 0 - 15, 
-                    the handshakestringlength at 16 - 19, 
-                    the handshakestring at 20 - 20 + handshakestringlength
-                    the client's DH public key at the remaining bytes
+                 * this is encrypted and contains
+                 * the nonce at 0 - 15,
+                 * the handshakestringlength at 16 - 19,
+                 * the handshakestring at 20 - 20 + handshakestringlength
+                 * the client's DH public key at the remaining bytes
                  */
                 ByteBuffer decryptedHandShake;
                 if (keySession.handShakeReceiveBuffer.position() != handShakeLength) {
@@ -244,7 +246,8 @@ public class SecureFileSharingServerWithEncryption {
                     } else if (bytesRead > 0 && keySession.handShakeReceiveBuffer.position() == handShakeLength) {
                         keySession.handShakeReceiveBuffer.flip();
                         try {
-                            decryptedHandShake = ByteBuffer.wrap(keySession.decryptHandShake(keySession.handShakeReceiveBuffer.array()));
+                            decryptedHandShake = ByteBuffer
+                                    .wrap(keySession.decryptHandShake(keySession.handShakeReceiveBuffer.array()));
                         } catch (Exception e) {
                             System.err.println(
                                     clientChannel.getRemoteAddress() + " is not a valid client. disconnecting...");
@@ -254,7 +257,8 @@ public class SecureFileSharingServerWithEncryption {
                         decryptedHandShake.get(keySession.nonceArray);
                         byte[] decryptedHandshakeStringLengthArray = new byte[4];
                         decryptedHandShake.get(decryptedHandshakeStringLengthArray);
-                        int handShakeStringLength = ByteBuffer.wrap(decryptedHandshakeStringLengthArray).flip().getInt();
+                        int handShakeStringLength = ByteBuffer.wrap(decryptedHandshakeStringLengthArray).flip()
+                                .getInt();
                         byte[] handshakeStringArray = new byte[handShakeStringLength];
                         decryptedHandShake.get(handshakeStringArray);
                         String handShakeString = new String(handshakeStringArray, StandardCharsets.UTF_8);
@@ -269,12 +273,11 @@ public class SecureFileSharingServerWithEncryption {
                         try {
                             keySession.clientPublicKey = (DHPublicKey) keyFactory.generatePublic(clientDHPublicKeySpec);
                         } catch (Exception e) {
-                            System.err.println("Could not generate public key for " + clientChannel.getRemoteAddress() + "try recoonecting...");
+                            System.err.println("Could not generate public key for " + clientChannel.getRemoteAddress()
+                                    + "try recoonecting...");
                             cancelKey(key);
                             return;
                         }
-
-                        keySession.progressState = Progress.WRITING_HANDSHAKE;
                         keySession.handShakeReceiveLengthBuffer.clear();
                         keySession.handShakeReceiveBuffer.clear();
 
@@ -286,7 +289,32 @@ public class SecureFileSharingServerWithEncryption {
 
                         keySession.serverPublicKey = (DHPublicKey) dhKeyPair.getPublic();
                         keySession.serverPrivateKey = (DHPrivateKey) dhKeyPair.getPrivate();
-                        
+                        try {
+                            keySession.secretKeySetup();
+                        } catch (Exception e) {
+                            System.err.println("Could not generate secret key for " + clientChannel.getRemoteAddress()
+                                    + "try recoonecting...");
+                            cancelKey(key);
+                            return;
+                        }
+                        int bufferCapacity = keySession.NONCE_SIZE + keySession.serverPublicKey.getEncoded().length;
+                        ByteBuffer handShakeToEncrypt = ByteBuffer.allocate(bufferCapacity);
+                        handShakeToEncrypt.put(keySession.nonceArray);
+                        handShakeToEncrypt.put(keySession.serverPublicKey.getEncoded());
+                        handShakeToEncrypt.flip();
+                        try {
+                            keySession.handShakeSendBuffer = ByteBuffer
+                                    .wrap(keySession.encrypt(handShakeToEncrypt.array()));
+                            keySession.handShakeSendLengthBuffer.clear()
+                                    .putInt(keySession.handShakeSendBuffer.capacity()).flip();
+                        } catch (Exception e) {
+                            System.err.println("Could not encrypt handshake for " + clientChannel.getRemoteAddress()
+                                    + "try recoonecting...");
+                            cancelKey(key);
+                            return;
+                        }
+                        keySession.progressState = Progress.WRITING_HANDSHAKE;
+
                     }
                 }
 
@@ -316,7 +344,7 @@ public class SecureFileSharingServerWithEncryption {
                 keySession.handShakeSendBuffer.clear();
                 key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
                 key.interestOps(prevOps);
-                keySession.progressState = Progress.READY_TO_READ_HANDSHAKE;
+                keySession.progressState = Progress.VALID_HANDSHAKE;
             } else if (bytesWritten == 0) {
                 key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
             }
@@ -343,10 +371,13 @@ public class SecureFileSharingServerWithEncryption {
                                 .collect(Collectors.joining("\n"));
                     } else
                         fileList = "No files available on server";
-                    keySession.fileListStringLength = fileList.length();
+                    // resume work here.
+                    byte[] fileListBytes = fileList.getBytes(StandardCharsets.UTF_8);
+                    byte[] encryptedFileListBytes = keySession.encrypt(fileListBytes);
+                    keySession.encryptedFileListStringLength = encryptedFileListBytes.length;
                     int prevOps = key.interestOps();
                     key.interestOps(0);
-                    asyncFileChannel.write(ByteBuffer.wrap(fileList.getBytes(StandardCharsets.UTF_8)), 0, key,
+                    asyncFileChannel.write(ByteBuffer.wrap(encryptedFileListBytes), 0, key,
                             new CompletionHandler<Integer, SelectionKey>() {
                                 @Override
                                 public void completed(Integer result, SelectionKey attachment) {
@@ -357,7 +388,8 @@ public class SecureFileSharingServerWithEncryption {
                                                 StandardOpenOption.READ);
                                         keySession.progressState = Progress.FILE_LIST_SAVED_TO_DISK;
                                     } catch (Exception e) {
-                                        System.out.println("An error occured while sending file list to client ");
+                                        System.out.println("An error occured while opening file channel on File: "
+                                                + keySession.fileListTempFile.getFileName().toString());
                                     }
                                 }
 
@@ -378,7 +410,7 @@ public class SecureFileSharingServerWithEncryption {
                 return;
             long bytesWritten;
             keySession.commandBuffer.putInt(FILE_LIST);
-            keySession.fileListLengthBuffer.putInt(keySession.fileListStringLength);
+            keySession.fileListLengthBuffer.putInt(keySession.encryptedFileListStringLength);
             if (keySession.fileListInfoHeaderBufferArr == null) {
                 keySession.fileListInfoHeaderBufferArr = new ByteBuffer[] { keySession.commandBuffer,
                         keySession.fileListLengthBuffer };
@@ -411,6 +443,8 @@ public class SecureFileSharingServerWithEncryption {
                     keySession.fileChannel.close();
                     resetCurrentSessionObj(keySession);
                     key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
+                    Files.deleteIfExists(keySession.fileListTempFile);
+                    resetCurrentSessionObj(keySession);
                 }
             } else if (bytesWritten == 0) {
                 key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
@@ -723,7 +757,7 @@ public class SecureFileSharingServerWithEncryption {
         keySession.fileChannel = null;
         keySession.fileListTempFile = null;
         keySession.command = NO_COMMAND;
-        keySession.fileListStringLength = 0;
+        keySession.encryptedFileListStringLength = 0;
         keySession.fileNameLength = 0;
         keySession.fileSize = 0;
         keySession.c2cTransferCurrentPosition = 0;
@@ -732,7 +766,7 @@ public class SecureFileSharingServerWithEncryption {
         keySession.fileNameWithoutExtension = "";
         keySession.fileExtension = "";
 
-        //clears nonce used in handshake
+        // clears nonce used in handshake
         keySession.nonceArray = null;
     }
 
@@ -757,7 +791,7 @@ public class SecureFileSharingServerWithEncryption {
         FileChannel fileChannel = null;
         Path fileListTempFile = null;
         int command = NO_COMMAND;
-        int fileListStringLength = 0;
+        int encryptedFileListStringLength = 0;
         int fileNameLength = 0;
         long fileSize = 0;
         long c2cTransferCurrentPosition = 0;
@@ -765,6 +799,10 @@ public class SecureFileSharingServerWithEncryption {
         String fileName = "";
         String fileNameWithoutExtension = "";
         String fileExtension = "";
+
+        // This is used to track time and kill connections that do not complete
+        // handshake on time
+        long connectTime = System.currentTimeMillis();
 
         // Encryption and Decryption
         private static final int KEY_SIZE = 256;
@@ -821,13 +859,32 @@ public class SecureFileSharingServerWithEncryption {
         }
 
         // Handshake encryption and decryption methods
-        private byte[] encryptHandShake(byte[] dataToEncrypt) throws Exception {
 
-        }
+        // Move encryptHandshake Method to Client class
+        // private byte[] encryptHandShake(byte[] dataToEncrypt) throws Exception {
+        // new SecureRandom(nonceArray);
+        // byte[] handShakestringBytes =
+        // HANDSHAKE_STRING.getBytes(StandardCharsets.UTF_8);
+        // int handShakeStringLength = handShakestringBytes.length;
+        // byte[] clientPublickeyBytes = clientPublicKey.getEncoded();
+        // int bufferSize = nonceArray.length + 4 + handShakestringBytes.length +
+        // clientPublickeyBytes.length;
+        // ByteBuffer buffer = ByteBuffer.allocate(bufferSize);
+        // buffer.put(nonceArray).putInt(handShakeStringLength).put(handShakestringBytes).put(clientPublickeyBytes).flip();
+
+        // Cipher rsaCipher = Cipher.getInstance("RSA/ECB/OAEPPadding");
+        // OAEPParameterSpec spec = new OAEPParameterSpec("SHA-256", "MGF1",
+        // MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT);
+        // rsaCipher.init(Cipher.ENCRYPT_MODE, serverHandShakePublicKey, spec);
+        // return rsaCipher.doFinal(buffer.array());
+
+        // }
 
         private byte[] decryptHandShake(byte[] encryptedData) throws Exception {
-            Cipher rsacipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
-            rsacipher.init(Cipher.DECRYPT_MODE, serverHandShakePrivateKey);
+            Cipher rsacipher = Cipher.getInstance("RSA/ECB/OAEPPadding");
+            OAEPParameterSpec spec = new OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256,
+                    PSource.PSpecified.DEFAULT);
+            rsacipher.init(Cipher.DECRYPT_MODE, serverHandShakePrivateKey, spec);
             return rsacipher.doFinal(encryptedData);
         }
     }
