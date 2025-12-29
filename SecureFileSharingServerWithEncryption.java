@@ -53,10 +53,6 @@ public class SecureFileSharingServerWithEncryption {
     private static final int FILE_DOWNLOAD = 3;
     private static final int FILE_LIST_REQUEST = 4;
     private static final int FILE_LIST = 5;
-    private static final long MAX_FILE_SIZE = 1024 * 1024 * 1024;
-    private static final long MAX_ENCRYPTED_FILE_SIZE = MAX_FILE_SIZE + 64; // 64 bytes safety margin
-    private static final int MAX_FILE_NAME_LENGTH = 512;
-    private static final int MAX_ENCRYPTED_FILE_NAME_LENGTH = MAX_FILE_NAME_LENGTH + 64; // 64 bytes safety margin
     private static String HANDSHAKE_STRING = "SecureFileSharingHandShake";
     private static long TEMPFILENUMBER = 0;
     private static Path serverDownloadPath = Paths.get(System.getProperty("user.home"),
@@ -354,6 +350,24 @@ public class SecureFileSharingServerWithEncryption {
 
     }
 
+    /*
+     * resume work here
+     * create the client class. the client should not hardcode it's handshake keys.
+     * the client should only hardcode the server public key.
+     * the client should generate it's own handshake private and public keys.
+     * then the client should encrypt its dh public key and it's handashake public
+     * key using the server public key.
+     * then the client should send the encrypted dh public key and the encrypted
+     * handashake public key to the server.
+     * use the client handshake public key to encrypt metadata sent to the client
+     * from the server.
+     * in the client class, use the server handshake public key to encrypt metadata
+     * sent to the server from the client.
+     * 
+     * in summary,the handshake public keys would be used encrypt metadata between
+     * client and server.
+     */
+
     private static void serverSendFilesList(SelectionKey key) throws IOException {
         CurrentSession keySession = (CurrentSession) key.attachment();
         SocketChannel clientChannel = (SocketChannel) key.channel();
@@ -374,7 +388,6 @@ public class SecureFileSharingServerWithEncryption {
                     // resume work here.
                     byte[] fileListBytes = fileList.getBytes(StandardCharsets.UTF_8);
                     byte[] encryptedFileListBytes = keySession.encrypt(fileListBytes);
-                    keySession.encryptedFileListStringLength = encryptedFileListBytes.length;
                     int prevOps = key.interestOps();
                     key.interestOps(0);
                     asyncFileChannel.write(ByteBuffer.wrap(encryptedFileListBytes), 0, key,
@@ -410,18 +423,19 @@ public class SecureFileSharingServerWithEncryption {
                 return;
             long bytesWritten;
             keySession.commandBuffer.putInt(FILE_LIST);
-            keySession.fileListLengthBuffer.putInt(keySession.encryptedFileListStringLength);
+            keySession.encryptedFileListStringLength = keySession.fileChannel.size();
+            keySession.encryptedFileListLengthBuffer.clear().putLong(keySession.encryptedFileListStringLength).flip();
             if (keySession.fileListInfoHeaderBufferArr == null) {
                 keySession.fileListInfoHeaderBufferArr = new ByteBuffer[] { keySession.commandBuffer,
-                        keySession.fileListLengthBuffer };
+                        keySession.encryptedFileListLengthBuffer };
             }
             bytesWritten = clientChannel.write(keySession.fileListInfoHeaderBufferArr);
             if (bytesWritten < 0) {
                 System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                 cancelKey(key);
-            } else if (bytesWritten > 0 && !keySession.fileListLengthBuffer.hasRemaining()) {
+            } else if (bytesWritten > 0 && !keySession.encryptedFileListLengthBuffer.hasRemaining()) {
                 keySession.commandBuffer.clear();
-                keySession.fileListLengthBuffer.clear();
+                keySession.encryptedFileListLengthBuffer.clear();
                 keySession.progressState = Progress.WRITING_FILELIST;
                 key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
             } else if (bytesWritten == 0) {
@@ -748,7 +762,7 @@ public class SecureFileSharingServerWithEncryption {
         keySession.fileNameLengthBuffer.clear();
         keySession.handShakeSendLengthBuffer.clear();
         keySession.handShakeReceiveLengthBuffer.clear();
-        keySession.fileListLengthBuffer.clear();
+        keySession.encryptedFileListLengthBuffer.clear();
         keySession.informationSizeBuffer.clear();
         keySession.fileSizeBuffer.clear();
         keySession.fileListInfoHeaderBufferArr = null;
@@ -782,8 +796,8 @@ public class SecureFileSharingServerWithEncryption {
         ByteBuffer fileNameLengthBuffer = ByteBuffer.allocate(4);
         ByteBuffer handShakeSendLengthBuffer = ByteBuffer.allocate(4);
         ByteBuffer handShakeReceiveLengthBuffer = ByteBuffer.allocate(4);
-        ByteBuffer fileListLengthBuffer = ByteBuffer.allocate(4);
         ByteBuffer informationSizeBuffer = ByteBuffer.allocate(4);
+        ByteBuffer encryptedFileListLengthBuffer = ByteBuffer.allocate(8);
         ByteBuffer fileSizeBuffer = ByteBuffer.allocate(8);
         ByteBuffer[] fileListInfoHeaderBufferArr = null;
         ByteBuffer[] informationBufferArr = null;
@@ -791,7 +805,7 @@ public class SecureFileSharingServerWithEncryption {
         FileChannel fileChannel = null;
         Path fileListTempFile = null;
         int command = NO_COMMAND;
-        int encryptedFileListStringLength = 0;
+        long encryptedFileListStringLength = 0;
         int fileNameLength = 0;
         long fileSize = 0;
         long c2cTransferCurrentPosition = 0;
