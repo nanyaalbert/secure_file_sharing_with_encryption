@@ -20,9 +20,12 @@ import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
-import java.security.PrivateKey;
-import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.security.interfaces.ECPrivateKey;
+import java.security.interfaces.ECPublicKey;
+import java.security.interfaces.RSAPrivateKey;
+import java.security.interfaces.RSAPublicKey;
+import java.security.spec.ECParameterSpec;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
@@ -37,9 +40,6 @@ import java.util.stream.Stream;
 import javax.crypto.Cipher;
 import javax.crypto.KeyAgreement;
 import javax.crypto.SecretKey;
-import javax.crypto.interfaces.DHPrivateKey;
-import javax.crypto.interfaces.DHPublicKey;
-import javax.crypto.spec.DHParameterSpec;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.OAEPParameterSpec;
 import javax.crypto.spec.PSource;
@@ -78,19 +78,19 @@ public class SecureFileSharingServerWithEncryption {
         FILE_LIST_SAVED_TO_DISK
     }
 
-    private static final String RSA_HANDSHAKE_PUBLIC_KEY_STRING = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+TEpsZJxq1bDlcGsy4a//RRq3MMfYeE+1J6yL9LiqCf0hbdBE4y86sQjbUquoYi6VpTITiw7uzMg3wzRmkqABFtcbOtzNEeHSpqgMv88YRDlPbVutsE4JAxmm6BkA2cLqIgjM6jbZRrnR5kwaw/jWFmhOpazNRH/c6HWQ3KLFAUc/ZXBchm69gFOdtGJ939rzE9zzpLo5t+lp/kAbXbdug98Geo7Nky5A3rv3ooFAaRgwovCCKQWoKGFKndgk1TootJuLBH+DaeQ+sjDhlAByrygwuV9pPS31r1lYoWQ8Ls5RclfVIDxJLpmOxjx0x1Qn6ixnQ7P75Uy6rA9s3PiwIDAQAB";
-    private static final String RSA_HANDSHAKE_PRIVATE_KEY_STRING = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC35MSmxknGrVsOVwazLhr/9FGrcwx9h4T7UnrIv0uKoJ/SFt0ETjLzqxCNtSq6hiLpWlMhOLDu7MyDfDNGaSoAEW1xs63M0R4dKmqAy/zxhEOU9tW62wTgkDGaboGQDZwuoiCMzqNtlGudHmTBrD+NYWaE6lrM1Ef9zodZDcosUBRz9lcFyGbr2AU520Yn3f2vMT3POkujm36Wn+QBtdt26D3wZ6js2TLkDeu/eigUBpGDCi8IIpBagoYUqd2CTVOii0m4sEf4Np5D6yMOGUAHKvKDC5X2k9LfWvWVihZDwuzlFyV9UgPEkumY7GPHTHVCfqLGdDs/vlTLqsD2zc+LAgMBAAECggEAHb2CzFIPRnFs44HRlJLlTPXPa4H8yCRtrlOlhefiKLZXgput/O9EsEG/OJvPIEFnTgQMo7fObaWgYbdpd360izRGVfgwKIq9awwcE15qNwkkAOh2onSfck3/p7EthQWed7BCwWL97U/uo4dx1hysXoodEWvxaWT/i52mKBHh246FiyEzzH9cpTPKtx7CgyDwq8kdORF7XD2a8DDMrUBBnc8JeTY9glOysnOx2y0GYAq2JMOIfTM/7JtNvBAnIGvnNhW6BDA01Bw2ubpeklBHzq69Jrv4AbjAGNyLcB47//75KYaASxseCnk0sEqcFfSe7oFZBVgI9ojR2H9LAXFsmQKBgQDIqioRfivmbg/Cg2QH4dGzqbG5KbJfwlzyBoLQeWqdNmmIHBA4cs2GS6q8Dv4ABgPgM5g5TNM2+64MqhctkIgmW7yCEAfFMVX82v3TWQvXNVv8pe3dgiBrXyfcD98xtNCymJckraUS7cThAZQ38DvWsQ0CR1gLoJlffTPVOIM0xwKBgQDqmqgwO9zqRNGDZa+aAqAcmIxRs/tQrY6pNq43WbQ3Xd+njIRMc1mj5X/M5+U1rO/Gstftvk+vKohiJdwbxlFe+/VZpJhaGF6Rwo6r+u5kz58XvUFN8lffvrFRNBX8P0PvK5ZZaix9ip6d6yYd3ap0OXiYMfzNtwNT6DJKF5mDHQKBgHT1shWGHCJwbmEq4kgx2F/G/h717dEg4bn0D5Vh38GIsJQz/0RXrfGj8v0wI95xoxqwF/72B3pZ0gXxshbN0n3BJKwOmejXK854+k+Q7HTg1h/5ux5MNYc/7GS5H5fCU451oEsxpzDUQ9f+apz8OnSVuAZm/SuxzRO6T1btXJSLAoGAdjaN7xgK/iTFKZ+Qd1tBUIdxlS3KweFiVFOQP6W80HVF4EhG1br9/T8EQbzL21sTyxyM/2f5APu+ky4elgQ9Nk5hV9U/S46iAHJ3r6MWgse3k5+yi1NFAiI1eQR025EJazecX9vHJU83E73MjBoI7N2UraPqjcHdNGd5B6qSmOUCgYEAozffWpGd0aCBAb2CJriEmGTwm4Yr+Yp0/yqWv9RFYP1PnFvKDY1vpaktankZTNeVwY2J0Cc1GNiUGnPn9V+nbLK/kPdqZ6Q8aTvln9vRYkRYl6KUdQetARiI8/mPXUK8Io8+eieHjVIN/SELQC+Lu66sUwjoQi3lu5Z3Zg6ECE4=";
-    private static PublicKey serverHandShakePublicKey;
-    private static PrivateKey serverHandShakePrivateKey;
+    private static final String RSA_PUBLIC_KEY_STRING = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+TEpsZJxq1bDlcGsy4a//RRq3MMfYeE+1J6yL9LiqCf0hbdBE4y86sQjbUquoYi6VpTITiw7uzMg3wzRmkqABFtcbOtzNEeHSpqgMv88YRDlPbVutsE4JAxmm6BkA2cLqIgjM6jbZRrnR5kwaw/jWFmhOpazNRH/c6HWQ3KLFAUc/ZXBchm69gFOdtGJ939rzE9zzpLo5t+lp/kAbXbdug98Geo7Nky5A3rv3ooFAaRgwovCCKQWoKGFKndgk1TootJuLBH+DaeQ+sjDhlAByrygwuV9pPS31r1lYoWQ8Ls5RclfVIDxJLpmOxjx0x1Qn6ixnQ7P75Uy6rA9s3PiwIDAQAB";
+    private static final String RSA_PRIVATE_KEY_STRING = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC35MSmxknGrVsOVwazLhr/9FGrcwx9h4T7UnrIv0uKoJ/SFt0ETjLzqxCNtSq6hiLpWlMhOLDu7MyDfDNGaSoAEW1xs63M0R4dKmqAy/zxhEOU9tW62wTgkDGaboGQDZwuoiCMzqNtlGudHmTBrD+NYWaE6lrM1Ef9zodZDcosUBRz9lcFyGbr2AU520Yn3f2vMT3POkujm36Wn+QBtdt26D3wZ6js2TLkDeu/eigUBpGDCi8IIpBagoYUqd2CTVOii0m4sEf4Np5D6yMOGUAHKvKDC5X2k9LfWvWVihZDwuzlFyV9UgPEkumY7GPHTHVCfqLGdDs/vlTLqsD2zc+LAgMBAAECggEAHb2CzFIPRnFs44HRlJLlTPXPa4H8yCRtrlOlhefiKLZXgput/O9EsEG/OJvPIEFnTgQMo7fObaWgYbdpd360izRGVfgwKIq9awwcE15qNwkkAOh2onSfck3/p7EthQWed7BCwWL97U/uo4dx1hysXoodEWvxaWT/i52mKBHh246FiyEzzH9cpTPKtx7CgyDwq8kdORF7XD2a8DDMrUBBnc8JeTY9glOysnOx2y0GYAq2JMOIfTM/7JtNvBAnIGvnNhW6BDA01Bw2ubpeklBHzq69Jrv4AbjAGNyLcB47//75KYaASxseCnk0sEqcFfSe7oFZBVgI9ojR2H9LAXFsmQKBgQDIqioRfivmbg/Cg2QH4dGzqbG5KbJfwlzyBoLQeWqdNmmIHBA4cs2GS6q8Dv4ABgPgM5g5TNM2+64MqhctkIgmW7yCEAfFMVX82v3TWQvXNVv8pe3dgiBrXyfcD98xtNCymJckraUS7cThAZQ38DvWsQ0CR1gLoJlffTPVOIM0xwKBgQDqmqgwO9zqRNGDZa+aAqAcmIxRs/tQrY6pNq43WbQ3Xd+njIRMc1mj5X/M5+U1rO/Gstftvk+vKohiJdwbxlFe+/VZpJhaGF6Rwo6r+u5kz58XvUFN8lffvrFRNBX8P0PvK5ZZaix9ip6d6yYd3ap0OXiYMfzNtwNT6DJKF5mDHQKBgHT1shWGHCJwbmEq4kgx2F/G/h717dEg4bn0D5Vh38GIsJQz/0RXrfGj8v0wI95xoxqwF/72B3pZ0gXxshbN0n3BJKwOmejXK854+k+Q7HTg1h/5ux5MNYc/7GS5H5fCU451oEsxpzDUQ9f+apz8OnSVuAZm/SuxzRO6T1btXJSLAoGAdjaN7xgK/iTFKZ+Qd1tBUIdxlS3KweFiVFOQP6W80HVF4EhG1br9/T8EQbzL21sTyxyM/2f5APu+ky4elgQ9Nk5hV9U/S46iAHJ3r6MWgse3k5+yi1NFAiI1eQR025EJazecX9vHJU83E73MjBoI7N2UraPqjcHdNGd5B6qSmOUCgYEAozffWpGd0aCBAb2CJriEmGTwm4Yr+Yp0/yqWv9RFYP1PnFvKDY1vpaktankZTNeVwY2J0Cc1GNiUGnPn9V+nbLK/kPdqZ6Q8aTvln9vRYkRYl6KUdQetARiI8/mPXUK8Io8+eieHjVIN/SELQC+Lu66sUwjoQi3lu5Z3Zg6ECE4=";
+    private static RSAPublicKey serverRSAPublicKey;
+    private static RSAPrivateKey serverRSAPrivateKey;
 
     public static void main(String[] args) {
         try {
-            byte[] handShakePublicKeyBytes = Base64.getDecoder().decode(RSA_HANDSHAKE_PUBLIC_KEY_STRING);
-            byte[] handShakePrivateKeyBytes = Base64.getDecoder().decode(RSA_HANDSHAKE_PRIVATE_KEY_STRING);
-            serverHandShakePublicKey = (PublicKey) KeyFactory.getInstance("RSA")
-                    .generatePublic(new X509EncodedKeySpec(handShakePublicKeyBytes));
-            serverHandShakePrivateKey = (PrivateKey) KeyFactory.getInstance("RSA")
-                    .generatePrivate(new PKCS8EncodedKeySpec(handShakePrivateKeyBytes));
+            byte[] rsaPublicKeyBytes = Base64.getDecoder().decode(RSA_PUBLIC_KEY_STRING);
+            byte[] rsaPrivateKeyBytes = Base64.getDecoder().decode(RSA_PRIVATE_KEY_STRING);
+            serverRSAPublicKey = (RSAPublicKey) KeyFactory.getInstance("RSA")
+                    .generatePublic(new X509EncodedKeySpec(rsaPublicKeyBytes));
+            serverRSAPrivateKey = (RSAPrivateKey) KeyFactory.getInstance("RSA")
+                    .generatePrivate(new PKCS8EncodedKeySpec(rsaPrivateKeyBytes));
         } catch (Exception e) {
             System.err.println("An error occured when loading the handshake keys: " + e.getMessage());
             return;
@@ -207,53 +207,108 @@ public class SecureFileSharingServerWithEncryption {
     private static void readHandShake(SelectionKey key) throws IOException {
         SocketChannel clientChannel = (SocketChannel) key.channel();
         CurrentSession keySession = (CurrentSession) key.attachment();
-        int handShakeLength;
+        int encHandShakeLength;
         try {
-            if (keySession.handShakeReceiveLengthBuffer.position() != keySession.handShakeReceiveLengthBuffer
+            /*
+             * Read the first 256 bytes of the encrypted handshake
+             * Decrypt this using the server rsa private key
+             * The decrypted bytes contain the following
+             * bytes 0-3: length of the remaining bytes after the first 256
+             * bytes 4-19: nonce
+             * remaining bytes: the client ecdh public key
+             */
+            if (keySession.encHandShakeReceiveLengthBuffer.position() != keySession.encHandShakeReceiveLengthBuffer
                     .capacity()) {
                 int bytesRead;
-                bytesRead = clientChannel.read(keySession.handShakeReceiveLengthBuffer);
+                bytesRead = clientChannel.read(keySession.encHandShakeReceiveLengthBuffer);
                 if (bytesRead < 0) {
                     System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                     cancelKey(key);
-                } else if (bytesRead > 0 && keySession.handShakeReceiveLengthBuffer.remaining() == 0) {
+                } else if (bytesRead > 0 && keySession.encHandShakeReceiveLengthBuffer.remaining() == 0) {
+                    keySession.encHandShakeReceiveLengthBuffer.flip();
+                    byte[] decrypted = keySession.rsaDecrypt(keySession.encHandShakeReceiveLengthBuffer.array());
+                    ByteBuffer decryptedBuffer = ByteBuffer.wrap(decrypted);
+                    decryptedBuffer.get(keySession.handShakeReceiveLengthBuffer.clear().array());
+                    decryptedBuffer.get(keySession.nonceArray);
+                    byte[] ecdhBytes = new byte[decryptedBuffer.remaining()];
+                    decryptedBuffer.get(ecdhBytes);
+
+                    X509EncodedKeySpec clientECPublicKeySpec = new X509EncodedKeySpec(ecdhBytes);
+                    KeyFactory keyFactory = KeyFactory.getInstance("EC");
+                    try {
+                        keySession.clientPublicKey = (ECPublicKey) keyFactory.generatePublic(clientECPublicKeySpec);
+                    } catch (Exception e) {
+                        System.err.println("Could not generate ec public key for " + clientChannel.getRemoteAddress()
+                                + "try recoonecting...");
+                        cancelKey(key);
+                        return;
+                    }
+
+                    // set up server ec keys and shared secret
+                    ECPublicKey clientECPubKey = (ECPublicKey) keySession.clientPublicKey;
+                    ECParameterSpec ecParams = clientECPubKey.getParams();
+                    KeyPairGenerator serverKpg = KeyPairGenerator.getInstance("EC");
+                    serverKpg.initialize(ecParams);
+                    KeyPair serverKP = serverKpg.generateKeyPair();
+
+                    keySession.serverECPublicKey = (ECPublicKey) serverKP.getPublic();
+                    keySession.serverECPrivateKey = (ECPrivateKey) serverKP.getPrivate();
+                    try {
+                        keySession.secretKeySetup();
+                    } catch (Exception e) {
+                        System.err.println("Could not generate secret key for " + clientChannel.getRemoteAddress()
+                                + "try recoonecting...");
+                        cancelKey(key);
+                        return;
+                    }
+
                     keySession.progressState = Progress.READING_HANDSHAKE;
-                    keySession.handShakeReceiveBuffer = ByteBuffer
+                    keySession.encHandShakeReceiveBuffer = ByteBuffer
                             .allocate(keySession.handShakeReceiveLengthBuffer.getInt());
                 }
             }
 
             if (keySession.progressState == Progress.READING_HANDSHAKE) {
                 int bytesRead;
-                handShakeLength = keySession.handShakeReceiveLengthBuffer.getInt();
+                encHandShakeLength = keySession.handShakeReceiveLengthBuffer.getInt();
                 /*
-                 * this is encrypted and contains
-                 * the nonce at 0 - 15,
-                 * the handshakestringlength at 16 - 19,
-                 * the handshakestring at 20 - 20 + handshakestringlength
-                 * the client's DH public key at the remaining bytes
+                 * the server can only decrypt this if it succeessfully
+                 * decrypted the first 256 bytes in the previous step and got the client ecdh
+                 * public key to generate the shared secret key
+                 * 
+                 * the decrypted handshake contains
+                 * the handshakestringlength at 16 -> 23,
+                 * rsa public key length at 24 -> 27,
+                 * the handshakestring at 28 -> 28 + handshakestringlength,
+                 * the client's rsa public key at the remaining bytes
                  */
                 ByteBuffer decryptedHandShake;
-                if (keySession.handShakeReceiveBuffer.position() != handShakeLength) {
-                    bytesRead = clientChannel.read(keySession.handShakeReceiveBuffer);
+                if (keySession.encHandShakeReceiveBuffer.position() != encHandShakeLength) {
+                    bytesRead = clientChannel.read(keySession.encHandShakeReceiveBuffer);
                     if (bytesRead < 0) {
                         System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                         cancelKey(key);
-                    } else if (bytesRead > 0 && keySession.handShakeReceiveBuffer.position() == handShakeLength) {
-                        keySession.handShakeReceiveBuffer.flip();
+                    } else if (bytesRead > 0 && keySession.encHandShakeReceiveBuffer.position() == encHandShakeLength) {
+                        keySession.encHandShakeReceiveBuffer.flip();
                         try {
                             decryptedHandShake = ByteBuffer
-                                    .wrap(keySession.decryptHandShake(keySession.handShakeReceiveBuffer.array()));
+                                    .wrap(keySession
+                                            .decrypt(keySession.encHandShakeReceiveBuffer.array()));
                         } catch (Exception e) {
                             System.err.println(
                                     clientChannel.getRemoteAddress() + " is not a valid client. disconnecting...");
                             cancelKey(key);
                             return;
                         }
-                        decryptedHandShake.get(keySession.nonceArray);
+
                         byte[] decryptedHandshakeStringLengthArray = new byte[4];
                         decryptedHandShake.get(decryptedHandshakeStringLengthArray);
                         int handShakeStringLength = ByteBuffer.wrap(decryptedHandshakeStringLengthArray).flip()
+                                .getInt();
+
+                        byte[] clientRSAPublicKeyLengthArr = new byte[4];
+                        decryptedHandShake.get(clientRSAPublicKeyLengthArr);
+                        int clientRSAPublicKeyLength = ByteBuffer.wrap(clientRSAPublicKeyLengthArr).flip()
                                 .getInt();
                         byte[] handshakeStringArray = new byte[handShakeStringLength];
                         decryptedHandShake.get(handshakeStringArray);
@@ -262,47 +317,44 @@ public class SecureFileSharingServerWithEncryption {
                             cancelKey(key);
                             return;
                         }
-                        byte[] clientDHPublicKeyArray = new byte[decryptedHandShake.remaining()];
-                        decryptedHandShake.get(clientDHPublicKeyArray);
-                        X509EncodedKeySpec clientDHPublicKeySpec = new X509EncodedKeySpec(clientDHPublicKeyArray);
-                        KeyFactory keyFactory = KeyFactory.getInstance("DH");
+
+                        byte[] clientRSAPublicKeyArray = new byte[clientRSAPublicKeyLength];
+                        decryptedHandShake.get(clientRSAPublicKeyArray);
+                        X509EncodedKeySpec clientRSAPublicKeySpec = new X509EncodedKeySpec(
+                                clientRSAPublicKeyArray);
+                        KeyFactory keyFactory = KeyFactory.getInstance("RSA");
                         try {
-                            keySession.clientPublicKey = (DHPublicKey) keyFactory.generatePublic(clientDHPublicKeySpec);
+                            keySession.clientRSAPublicKey = (RSAPublicKey) keyFactory
+                                    .generatePublic(clientRSAPublicKeySpec);
                         } catch (Exception e) {
-                            System.err.println("Could not generate public key for " + clientChannel.getRemoteAddress()
-                                    + "try recoonecting...");
+                            System.err.println(
+                                    "Could not generate handshake public key for " + clientChannel.getRemoteAddress()
+                                            + "try recoonecting...");
                             cancelKey(key);
                             return;
                         }
+
                         keySession.handShakeReceiveLengthBuffer.clear();
                         keySession.handShakeReceiveBuffer.clear();
 
-                        DHPublicKey dhPubKey = (DHPublicKey) keySession.clientPublicKey;
-                        DHParameterSpec dhKeyParams = dhPubKey.getParams();
-                        KeyPairGenerator serverKpg = KeyPairGenerator.getInstance("DH");
-                        serverKpg.initialize(dhKeyParams);
-                        KeyPair dhKeyPair = serverKpg.generateKeyPair();
-
-                        keySession.serverPublicKey = (DHPublicKey) dhKeyPair.getPublic();
-                        keySession.serverPrivateKey = (DHPrivateKey) dhKeyPair.getPrivate();
-                        try {
-                            keySession.secretKeySetup();
-                        } catch (Exception e) {
-                            System.err.println("Could not generate secret key for " + clientChannel.getRemoteAddress()
-                                    + "try recoonecting...");
-                            cancelKey(key);
-                            return;
-                        }
-                        int bufferCapacity = keySession.NONCE_SIZE + keySession.serverPublicKey.getEncoded().length;
+                        // prepare the handshake that will be sent to the client
+                        int bufferCapacity = keySession.NONCE_SIZE + keySession.serverECPublicKey.getEncoded().length;
                         ByteBuffer handShakeToEncrypt = ByteBuffer.allocate(bufferCapacity);
                         handShakeToEncrypt.put(keySession.nonceArray);
-                        handShakeToEncrypt.put(keySession.serverPublicKey.getEncoded());
+                        handShakeToEncrypt.put(keySession.serverECPublicKey.getEncoded());
                         handShakeToEncrypt.flip();
+                        /*
+                         * RSA to encrypt the length
+                         * AES-GCM to encrypt the actual handshake sent
+                         */
                         try {
-                            keySession.handShakeSendBuffer = ByteBuffer
+                            keySession.encHandShakeSendBuffer = ByteBuffer
                                     .wrap(keySession.encrypt(handShakeToEncrypt.array()));
-                            keySession.handShakeSendLengthBuffer.clear()
-                                    .putInt(keySession.handShakeSendBuffer.capacity()).flip();
+                            int encLength = keySession.encHandShakeSendBuffer.capacity();
+                            ByteBuffer encLengthBuffer = ByteBuffer.allocate(4);
+                            encLengthBuffer.putInt(encLength).flip();
+                            keySession.encHandShakeSendLengthBuffer.clear()
+                                    .put(keySession.rsaEncrypt(encLengthBuffer.array()));
                         } catch (Exception e) {
                             System.err.println("Could not encrypt handshake for " + clientChannel.getRemoteAddress()
                                     + "try recoonecting...");
@@ -328,16 +380,15 @@ public class SecureFileSharingServerWithEncryption {
         int prevOps = key.interestOps();
         key.interestOps(0);
         try {
-            ByteBuffer[] handshakeBufferArrs = { keySession.handShakeSendLengthBuffer, keySession.handShakeSendBuffer };
+            ByteBuffer[] handshakeBufferArrs = { keySession.encHandShakeSendLengthBuffer,
+                    keySession.encHandShakeSendBuffer };
             bytesWritten = clientChannel.write(handshakeBufferArrs);
             if (bytesWritten < 0) {
                 System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                 cancelKey(key);
-            } else if (bytesWritten > 0 && keySession.handShakeSendBuffer.hasRemaining()) {
-                keySession.progressState = Progress.WRITING_HANDSHAKE;
-            } else if (bytesWritten > 0 && !keySession.handShakeSendBuffer.hasRemaining()) {
-                keySession.handShakeSendLengthBuffer.clear();
-                keySession.handShakeSendBuffer.clear();
+            } else if (bytesWritten > 0 && !keySession.encHandShakeSendBuffer.hasRemaining()) {
+                keySession.encHandShakeSendLengthBuffer.clear();
+                keySession.encHandShakeSendBuffer.clear();
                 key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
                 key.interestOps(prevOps);
                 keySession.progressState = Progress.VALID_HANDSHAKE;
@@ -746,22 +797,18 @@ public class SecureFileSharingServerWithEncryption {
         System.out.println("-------------------------------------------\n");
     }
 
-    // private static byte[] encrypt(){}
-
-    // private static byte[] decrypt(){}
-
     private static void resetCurrentSessionObj(CurrentSession keySession) {
         keySession.progressState = Progress.VALID_HANDSHAKE;
-        keySession.handShakeSendBuffer = null;
+        keySession.encHandShakeSendBuffer = null;
         keySession.handShakeReceiveBuffer = null;
+        keySession.encHandShakeReceiveBuffer = null;
         keySession.informationBuffer = null;
         keySession.fileNameBuffer = null;
-        keySession.sendBuffer.clear();
-        keySession.receiveBuffer.clear();
         keySession.commandBuffer.clear();
         keySession.fileNameLengthBuffer.clear();
-        keySession.handShakeSendLengthBuffer.clear();
+        keySession.encHandShakeSendLengthBuffer.clear();
         keySession.handShakeReceiveLengthBuffer.clear();
+        keySession.encHandShakeReceiveLengthBuffer.clear();
         keySession.encryptedFileListLengthBuffer.clear();
         keySession.informationSizeBuffer.clear();
         keySession.fileSizeBuffer.clear();
@@ -780,22 +827,22 @@ public class SecureFileSharingServerWithEncryption {
         keySession.fileNameWithoutExtension = "";
         keySession.fileExtension = "";
 
-        // clears nonce used in handshake
+        // clear nonce used in handshake
         keySession.nonceArray = null;
     }
 
     private static class CurrentSession {
         Progress progressState = null;
-        ByteBuffer handShakeSendBuffer = null;
+        ByteBuffer encHandShakeSendBuffer = null;
         ByteBuffer handShakeReceiveBuffer = null;
+        ByteBuffer encHandShakeReceiveBuffer = null;
         ByteBuffer informationBuffer = null;
         ByteBuffer fileNameBuffer = null;
-        ByteBuffer sendBuffer = ByteBuffer.allocate(1024 * 1024);
-        ByteBuffer receiveBuffer = ByteBuffer.allocate(1024 * 1024);
         ByteBuffer commandBuffer = ByteBuffer.allocate(4);
         ByteBuffer fileNameLengthBuffer = ByteBuffer.allocate(4);
-        ByteBuffer handShakeSendLengthBuffer = ByteBuffer.allocate(4);
+        ByteBuffer encHandShakeSendLengthBuffer = ByteBuffer.allocate(256);
         ByteBuffer handShakeReceiveLengthBuffer = ByteBuffer.allocate(4);
+        ByteBuffer encHandShakeReceiveLengthBuffer = ByteBuffer.allocate(256);
         ByteBuffer informationSizeBuffer = ByteBuffer.allocate(4);
         ByteBuffer encryptedFileListLengthBuffer = ByteBuffer.allocate(8);
         ByteBuffer fileSizeBuffer = ByteBuffer.allocate(8);
@@ -826,14 +873,15 @@ public class SecureFileSharingServerWithEncryption {
         private byte[] nonceArray = new byte[NONCE_SIZE];
         private String additionalData = "SERVER: " + ServerIPAdress + " PORT: " + PORT;
         private byte[] additionalDataBytes = additionalData.getBytes();
-        private DHPublicKey clientPublicKey;
-        private DHPublicKey serverPublicKey;
-        private DHPrivateKey serverPrivateKey;
+        private ECPublicKey clientPublicKey;
+        private RSAPublicKey clientRSAPublicKey;
+        private ECPublicKey serverECPublicKey;
+        private ECPrivateKey serverECPrivateKey;
         private SecretKey secretKey;
 
         private void secretKeySetup() throws Exception {
-            KeyAgreement ka = KeyAgreement.getInstance("DH");
-            ka.init(serverPrivateKey);
+            KeyAgreement ka = KeyAgreement.getInstance("ECDH");
+            ka.init(serverECPrivateKey);
             ka.doPhase(clientPublicKey, true);
             byte[] rawSecret = ka.generateSecret();
 
@@ -874,8 +922,9 @@ public class SecureFileSharingServerWithEncryption {
 
         // Handshake encryption and decryption methods
 
-        // Move encryptHandshake Method to Client class
-        // private byte[] encryptHandShake(byte[] dataToEncrypt) throws Exception {
+        // Move this Method to Client class
+        // private byte[] encryptHandShakeAndMetadata(byte[] dataToEncrypt) throws
+        // Exception {
         // new SecureRandom(nonceArray);
         // byte[] handShakestringBytes =
         // HANDSHAKE_STRING.getBytes(StandardCharsets.UTF_8);
@@ -885,20 +934,32 @@ public class SecureFileSharingServerWithEncryption {
         // clientPublickeyBytes.length;
         // ByteBuffer buffer = ByteBuffer.allocate(bufferSize);
         // buffer.put(nonceArray).putInt(handShakeStringLength).put(handShakestringBytes).put(clientPublickeyBytes).flip();
+        // The code above will not be in the method. it will be runn before calling the
+        // method to encrypt the handshake
 
+        // change the encryption below to aes
         // Cipher rsaCipher = Cipher.getInstance("RSA/ECB/OAEPPadding");
         // OAEPParameterSpec spec = new OAEPParameterSpec("SHA-256", "MGF1",
         // MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT);
-        // rsaCipher.init(Cipher.ENCRYPT_MODE, serverHandShakePublicKey, spec);
-        // return rsaCipher.doFinal(buffer.array());
+        // rsaCipher.init(Cipher.ENCRYPT_MODE, serverRSAPublicKey, spec);
+        // return rsaCipher.doFinal(buffer.array()); // Change the buffer array to the
+        // dataToEncrypt parameter
 
         // }
 
-        private byte[] decryptHandShake(byte[] encryptedData) throws Exception {
+        private byte[] rsaEncrypt(byte[] dataToEncrypt) throws Exception {
+            Cipher rsaCipher = Cipher.getInstance("RSA/ECB/OAEPPadding");
+            OAEPParameterSpec spec = new OAEPParameterSpec("SHA-256", "MGF1",
+                    MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT);
+            rsaCipher.init(Cipher.ENCRYPT_MODE, clientRSAPublicKey, spec);
+            return rsaCipher.doFinal(dataToEncrypt);
+        }
+
+        private byte[] rsaDecrypt(byte[] encryptedData) throws Exception {
             Cipher rsacipher = Cipher.getInstance("RSA/ECB/OAEPPadding");
             OAEPParameterSpec spec = new OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256,
                     PSource.PSpecified.DEFAULT);
-            rsacipher.init(Cipher.DECRYPT_MODE, serverHandShakePrivateKey, spec);
+            rsacipher.init(Cipher.DECRYPT_MODE, serverRSAPrivateKey, spec);
             return rsacipher.doFinal(encryptedData);
         }
     }
