@@ -29,6 +29,7 @@ import java.security.spec.ECParameterSpec;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.Enumeration;
@@ -53,6 +54,9 @@ public class SecureFileSharingServerWithEncryption {
     private static final int FILE_DOWNLOAD = 3;
     private static final int FILE_LIST_REQUEST = 4;
     private static final int FILE_LIST = 5;
+    private static final int INFORMATION = 6;
+    private static final int STATUS_CONTINUE = 7;
+    private static final int STATUS_FINISH = 8;
     private static String HANDSHAKE_STRING = "SecureFileSharingHandShake";
     private static long TEMPFILENUMBER = 0;
     private static Path serverDownloadPath = Paths.get(System.getProperty("user.home"),
@@ -138,6 +142,7 @@ public class SecureFileSharingServerWithEncryption {
                         SocketChannel clientChannel = readyServer.accept();
                         clientChannel.configureBlocking(false);
                         CurrentSession currentClientSession = new CurrentSession();
+                        currentClientSession.generateServerBaseIV();
                         currentClientSession.progressState = Progress.JUST_CONNECTED;
                         clientChannel.register(selector, SelectionKey.OP_READ, currentClientSession);
                         System.out.println("Client " + clientChannel.getRemoteAddress() + " just connected");
@@ -147,14 +152,10 @@ public class SecureFileSharingServerWithEncryption {
                         SocketChannel readyClient = (SocketChannel) key.channel();
                         CurrentSession keySession = (CurrentSession) key.attachment();
 
-                        // resume here
-                        // add logic to read the first 256 bytes from the key's channel.
-                        // decrypt those bytes to get the command
-
                         switch (keySession.progressState) {
                             case Progress.JUST_CONNECTED, Progress.READY_TO_READ_HANDSHAKE,
                                     Progress.READING_HANDSHAKE -> {
-                                // Kills any connection that does not complete handshake send in 16 seconds
+                                // Kills any connection that does not complete send handshake in 16 seconds
                                 long currentTime = System.currentTimeMillis();
                                 if (currentTime - keySession.connectTime > 16000) {
                                     System.err.println("Client " + readyClient.getRemoteAddress()
@@ -168,15 +169,25 @@ public class SecureFileSharingServerWithEncryption {
                                 writeHandShake(key);
                             }
                             case Progress.VALID_HANDSHAKE -> {
-                                if (keySession.command == NO_COMMAND) {
-                                    readyClient.read(keySession.commandReceiveBuffer);
+                                if (keySession.command == NO_COMMAND && keySession.encCommandReceiveBuffer
+                                        .position() != keySession.encCommandReceiveBuffer.capacity()) {
+                                    readyClient.read(keySession.encCommandReceiveBuffer);
+                                    if (keySession.encCommandReceiveBuffer
+                                            .position() == keySession.encCommandReceiveBuffer.capacity()) {
+                                        byte[] commandBytes = new byte[keySession.commandReceiveBuffer.capacity()];
+                                        commandBytes = keySession
+                                                .rsaDecrypt(keySession.encCommandReceiveBuffer.array());
+                                        keySession.commandReceiveBuffer.clear().put(commandBytes).flip();
+                                        keySession.command = keySession.commandReceiveBuffer.getInt();
+                                    }
                                 }
-                                if (keySession.command == NO_COMMAND
-                                        && keySession.commandReceiveBuffer.position() == keySession.commandReceiveBuffer
-                                                .capacity()) {
-                                    keySession.command = keySession.commandReceiveBuffer.getInt();
-                                } else
+                                if (keySession.command == NO_COMMAND || keySession.command != FILE_SEND_REQUEST
+                                        || keySession.command != FILE_UPLOAD_REQUEST
+                                        || keySession.command != FILE_LIST_REQUEST) {
+                                    // don't do anything until the correct command is gotten
                                     continue;
+                                }
+
                                 if (keySession.command == FILE_SEND_REQUEST) {
                                     serverSendFile(key);
                                 }
@@ -235,6 +246,8 @@ public class SecureFileSharingServerWithEncryption {
                     ByteBuffer decryptedBuffer = ByteBuffer.wrap(decrypted);
                     decryptedBuffer.get(keySession.handShakeReceiveLengthBuffer.clear().array());
                     decryptedBuffer.get(keySession.nonceArray);
+                    decryptedBuffer.get(keySession.clientIV);
+                    keySession.setupClientBaseIV(keySession.clientIV);
                     byte[] ecdhBytes = new byte[decryptedBuffer.remaining()];
                     decryptedBuffer.get(ecdhBytes);
 
@@ -343,9 +356,10 @@ public class SecureFileSharingServerWithEncryption {
                         keySession.handShakeReceiveBuffer.clear();
 
                         // prepare the handshake that will be sent to the client
-                        int bufferCapacity = keySession.NONCE_SIZE + keySession.serverECPublicKey.getEncoded().length;
+                        int bufferCapacity = keySession.NONCE_SIZE + keySession.IV_SIZE + keySession.serverECPublicKey.getEncoded().length;
                         ByteBuffer handShakeToEncrypt = ByteBuffer.allocate(bufferCapacity);
                         handShakeToEncrypt.put(keySession.nonceArray);
+                        handShakeToEncrypt.put(keySession.serverIV);
                         handShakeToEncrypt.put(keySession.serverECPublicKey.getEncoded());
                         handShakeToEncrypt.flip();
                         /*
@@ -471,7 +485,8 @@ public class SecureFileSharingServerWithEncryption {
                     byte[] encCommand = keySession.rsaEncrypt(keySession.commandSendBuffer.array());
                     keySession.encCommandSendBuffer = ByteBuffer.wrap(encCommand);
                 } catch (Exception e) {
-                    System.err.println("An error occured while encrypting command for client " + clientChannel.getRemoteAddress());
+                    System.err.println(
+                            "An error occured while encrypting command for client " + clientChannel.getRemoteAddress());
                     cancelKey(key);
                     return;
                 }
@@ -479,18 +494,20 @@ public class SecureFileSharingServerWithEncryption {
                 ByteBuffer encListLengthBuffer = ByteBuffer.allocate(8);
                 encListLengthBuffer.putLong(keySession.encryptedFileListStringLength).flip();
                 try {
-                    keySession.encryptedFileListLengthBuffer.clear().put(keySession.rsaEncrypt(encListLengthBuffer.array()))
-                        .flip();
+                    keySession.encFileListLengthBuffer.clear()
+                            .put(keySession.rsaEncrypt(encListLengthBuffer.array()))
+                            .flip();
                 } catch (Exception e) {
-                    System.err.println("An error occured while encrypting file list length for client " + clientChannel.getRemoteAddress());
+                    System.err.println("An error occured while encrypting file list length for client "
+                            + clientChannel.getRemoteAddress());
                     cancelKey(key);
                     return;
                 }
-                int capacity = keySession.encCommandReceiveBuffer.capacity()
-                        + keySession.encryptedFileListLengthBuffer.capacity();
+                int capacity = keySession.encCommandSendBuffer.capacity()
+                        + keySession.encFileListLengthBuffer.capacity();
                 keySession.encFileListInfoHeaderBuffer = ByteBuffer.allocate(capacity);
-                keySession.encFileListInfoHeaderBuffer.put(keySession.encCommandReceiveBuffer);
-                keySession.encFileListInfoHeaderBuffer.put(keySession.encryptedFileListLengthBuffer);
+                keySession.encFileListInfoHeaderBuffer.put(keySession.encCommandSendBuffer);
+                keySession.encFileListInfoHeaderBuffer.put(keySession.encFileListLengthBuffer);
                 keySession.encFileListInfoHeaderBuffer.flip();
             }
 
@@ -498,9 +515,9 @@ public class SecureFileSharingServerWithEncryption {
             if (bytesWritten < 0) {
                 System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                 cancelKey(key);
-            } else if (bytesWritten > 0 && !keySession.encryptedFileListLengthBuffer.hasRemaining()) {
+            } else if (bytesWritten > 0 && !keySession.encFileListLengthBuffer.hasRemaining()) {
                 keySession.commandReceiveBuffer.clear();
-                keySession.encryptedFileListLengthBuffer.clear();
+                keySession.encFileListLengthBuffer.clear();
                 keySession.progressState = Progress.WRITING_FILELIST;
                 key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
             } else if (bytesWritten == 0) {
@@ -539,8 +556,141 @@ public class SecureFileSharingServerWithEncryption {
 
     private static void serverSendFile2(SelectionKey key) throws IOException {
         int bytesRead;
-        SocketChannel readyClient = (SocketChannel) key.channel();
+        SocketChannel clientChannel = (SocketChannel) key.channel();
         CurrentSession keySession = (CurrentSession) key.attachment();
+        if (keySession.encFileNameLengthBuffer.position() < keySession.encFileNameLengthBuffer.capacity()) {
+            bytesRead = clientChannel.read(keySession.encFileNameLengthBuffer);
+            if (bytesRead < 0) {
+                cancelKey(key);
+                return;
+            }
+            if (keySession.encFileNameLengthBuffer.position() < keySession.encFileNameLengthBuffer
+                    .capacity())
+                return;
+            keySession.encFileNameLengthBuffer.flip();
+            try {
+                byte[] decFNLBytes = new byte[keySession.decFileNameLengthBuffer.capacity()];
+                decFNLBytes = keySession.decrypt(keySession.encFileNameLengthBuffer.array());
+                keySession.decFileNameLengthBuffer.put(decFNLBytes);
+            } catch (Exception e) {
+                System.err.println("An error occured while decrypting file name length for client "
+                        + clientChannel.getRemoteAddress());
+                cancelKey(key);
+                return;
+            }
+        }
+        if (keySession.decFileNameLengthBuffer.position() == keySession.decFileNameLengthBuffer
+                .capacity()) {
+            keySession.decFileNameLengthBuffer.flip();
+            keySession.decFileNameLength = keySession.decFileNameLengthBuffer.getInt();
+        }
+        if (keySession.decFileNameLength <= 0) {
+            System.err.println("Invalid file name length for client " + clientChannel.getRemoteAddress());
+            cancelKey(key);
+            return;
+        } else {
+            keySession.encFileNameBuffer = ByteBuffer.allocate(keySession.decFileNameLength);
+            clientChannel.read(keySession.encFileNameBuffer);
+            if (keySession.encFileNameBuffer.position() < keySession.decFileNameLength)
+                return;
+            keySession.encFileNameBuffer.flip();
+            try {
+                byte[] decFNBytes = keySession.decrypt(keySession.encFileNameBuffer.array());
+                keySession.decFileNameBuffer = ByteBuffer.wrap(decFNBytes);
+                keySession.decFileNameBuffer.flip();
+                keySession.fileName = new String(keySession.decFileNameBuffer.array(), StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                System.err.println("An error occured while decrypting file name for client "
+                        + clientChannel.getRemoteAddress());
+                cancelKey(key);
+                return;
+            }
+            if (keySession.fileName.isEmpty()) {
+                System.err.println("Invalid file name for client " + clientChannel.getRemoteAddress());
+                cancelKey(key);
+                return;
+            }
+        }
+        if (keySession.fileSize == 0 || keySession.progressState == Progress.WRITING_FILEDETAILS
+                || keySession.progressState == Progress.WRITING_FILEDATA) {
+            Path filePath = serverDownloadPath.resolve(keySession.fileName);
+            if (Files.notExists(filePath)) {
+                long bytesWritten;
+                if (keySession.progressState != Progress.WRITING_INFORMATION) {
+                    keySession.information = "file \" " + keySession.fileName
+                            + "\" does not exist";
+                    try {
+                        byte[] encInfoBytes = keySession
+                                .encrypt(keySession.information.getBytes(StandardCharsets.UTF_8));
+                        keySession.encInformationStringBuffer = ByteBuffer.wrap(encInfoBytes);
+                        keySession.informationLengthBuffer.putInt(keySession.encInformationStringBuffer.capacity());
+                        keySession.informationLengthBuffer.flip();
+                        byte[] encInfoLengthBytes = keySession.rsaEncrypt(keySession.informationLengthBuffer.array());
+                        keySession.encInformationLengthBuffer.put(encInfoLengthBytes);
+                        keySession.encInformationLengthBuffer.flip();
+
+                        try {
+                            keySession.commandSendBuffer.clear().putInt(INFORMATION).flip();
+                            byte[] encCommand = keySession.rsaEncrypt(keySession.commandSendBuffer.array());
+                            keySession.encCommandSendBuffer = ByteBuffer.wrap(encCommand);
+                        } catch (Exception e) {
+                            System.err.println(
+                                    "An error occured while encrypting command for client "
+                                            + clientChannel.getRemoteAddress());
+                            cancelKey(key);
+                            return;
+                        }
+                        int capacity = keySession.encCommandSendBuffer.capacity()
+                                + keySession.encInformationLengthBuffer.capacity()
+                                + keySession.encInformationStringBuffer.capacity();
+
+                        keySession.encInformationBuffer = ByteBuffer.allocate(capacity);
+                        /*
+                         * encrypted command at the first 256 bytes
+                         * encrypted information length at the next 256 bytes
+                         * encrypted information at the remaining bytes
+                         */
+                        keySession.encInformationBuffer.put(keySession.encCommandSendBuffer);
+                        keySession.encInformationBuffer.put(keySession.encInformationLengthBuffer);
+                        keySession.encInformationBuffer.put(keySession.encInformationStringBuffer);
+                        keySession.encInformationBuffer.flip();
+
+                        keySession.progressState = Progress.WRITING_INFORMATION;
+                    } catch (Exception e) {
+                        System.err.println("An error occured while encrypting information for client "
+                                + clientChannel.getRemoteAddress());
+                        cancelKey(key);
+                        return;
+                    }
+                } else if (keySession.progressState == Progress.WRITING_INFORMATION) {
+                    bytesWritten = clientChannel.write(keySession.encInformationBuffer);
+                    if (bytesWritten < 0) {
+                        cancelKey(key);
+                        return;
+                    } else if (bytesWritten > 0 && !keySession.encInformationBuffer.hasRemaining()) {
+                        key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
+                        resetCurrentSessionObj(keySession);
+                    } else if (bytesWritten == 0) {
+                        key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
+                    }
+                }
+
+            } else if (Files.exists(filePath)) {
+                try {
+                    keySession.commandSendBuffer.clear().putInt(INFORMATION).flip();
+                    byte[] encCommand = keySession.rsaEncrypt(keySession.commandSendBuffer.array());
+                    keySession.encCommandSendBuffer = ByteBuffer.wrap(encCommand);
+                } catch (Exception e) {
+                    System.err.println(
+                            "An error occured while encrypting command for client "
+                                    + clientChannel.getRemoteAddress());
+                    cancelKey(key);
+                    return;
+                }
+
+            }
+
+        }
     }
 
     private static void serverSendFile(SelectionKey key) throws IOException {
@@ -585,10 +735,10 @@ public class SecureFileSharingServerWithEncryption {
                             + "\" does not exist";
                     keySession.informationBuffer = ByteBuffer
                             .wrap(keySession.information.getBytes(StandardCharsets.UTF_8));
-                    keySession.informationSizeBuffer.clear()
+                    keySession.informationLengthBuffer.clear()
                             .putInt(keySession.informationBuffer.capacity()).flip();
                     keySession.informationBufferArr = new ByteBuffer[] {
-                            keySession.informationSizeBuffer,
+                            keySession.informationLengthBuffer,
                             keySession.informationBuffer };
                 } else if (!keySession.information.isEmpty()
                         && keySession.informationBufferArr != null) {
@@ -766,6 +916,13 @@ public class SecureFileSharingServerWithEncryption {
 
     private static void cancelKey(SelectionKey key) {
         try {
+            CurrentSession keySession = (CurrentSession) key.attachment();
+            resetCurrentSessionObj(keySession);
+            if (keySession.fileChannel != null && keySession.fileChannel.isOpen()) {
+                keySession.fileChannel.close();
+            }
+            keySession.directFileChunkBuffer = null;
+            key.attach(null);
             key.cancel();
             key.channel().close();
         } catch (Exception e) {
@@ -822,7 +979,13 @@ public class SecureFileSharingServerWithEncryption {
         keySession.handShakeReceiveBuffer = null;
         keySession.encHandShakeReceiveBuffer = null;
         keySession.informationBuffer = null;
+        keySession.encInformationStringBuffer = null;
+        keySession.decInformationStringBuffer = null;
+        keySession.encInformationBuffer = null;
+        keySession.decInformationBuffer = null;
         keySession.fileNameBuffer = null;
+        keySession.encFileNameBuffer = null;
+        keySession.decFileNameBuffer = null;
         keySession.commandReceiveBuffer.clear();
         keySession.commandSendBuffer.clear();
         keySession.encCommandReceiveBuffer.clear();
@@ -831,10 +994,13 @@ public class SecureFileSharingServerWithEncryption {
         keySession.encHandShakeSendLengthBuffer.clear();
         keySession.handShakeReceiveLengthBuffer.clear();
         keySession.encHandShakeReceiveLengthBuffer.clear();
-        keySession.encryptedFileListLengthBuffer.clear();
-        keySession.informationSizeBuffer.clear();
+        keySession.encFileListLengthBuffer.clear();
+        keySession.encFileNameLengthBuffer.clear();
+        keySession.decFileNameLengthBuffer.clear();
+        keySession.informationLengthBuffer.clear();
+        keySession.encInformationLengthBuffer.clear();
+        keySession.decInformationLengthBuffer.clear();
         keySession.fileSizeBuffer.clear();
-        keySession.fileListInfoHeaderBuffer = null;
         keySession.encFileListInfoHeaderBuffer.clear();
         keySession.informationBufferArr = null;
         keySession.fileDetailsBufferArr = null;
@@ -843,6 +1009,8 @@ public class SecureFileSharingServerWithEncryption {
         keySession.command = NO_COMMAND;
         keySession.encryptedFileListStringLength = 0;
         keySession.fileNameLength = 0;
+        keySession.encFileNameLength = 0;
+        keySession.decFileNameLength = 0;
         keySession.fileSize = 0;
         keySession.c2cTransferCurrentPosition = 0;
         keySession.information = "";
@@ -860,7 +1028,13 @@ public class SecureFileSharingServerWithEncryption {
         ByteBuffer handShakeReceiveBuffer = null;
         ByteBuffer encHandShakeReceiveBuffer = null;
         ByteBuffer informationBuffer = null;
+        ByteBuffer encInformationStringBuffer = null;
+        ByteBuffer decInformationStringBuffer = null;
+        ByteBuffer encInformationBuffer = null;
+        ByteBuffer decInformationBuffer = null;
         ByteBuffer fileNameBuffer = null;
+        ByteBuffer encFileNameBuffer = null;
+        ByteBuffer decFileNameBuffer = null;
         ByteBuffer commandReceiveBuffer = ByteBuffer.allocate(4);
         ByteBuffer encCommandReceiveBuffer = ByteBuffer.allocate(256);
         ByteBuffer commandSendBuffer = ByteBuffer.allocate(4);
@@ -869,11 +1043,14 @@ public class SecureFileSharingServerWithEncryption {
         ByteBuffer encHandShakeSendLengthBuffer = ByteBuffer.allocate(256);
         ByteBuffer handShakeReceiveLengthBuffer = ByteBuffer.allocate(4);
         ByteBuffer encHandShakeReceiveLengthBuffer = ByteBuffer.allocate(256);
-        ByteBuffer informationSizeBuffer = ByteBuffer.allocate(4);
-        ByteBuffer encryptedFileListLengthBuffer = ByteBuffer.allocate(256);
+        ByteBuffer informationLengthBuffer = ByteBuffer.allocate(4);
+        ByteBuffer encInformationLengthBuffer = ByteBuffer.allocate(256);
+        ByteBuffer decInformationLengthBuffer = ByteBuffer.allocate(4);
+        ByteBuffer encFileListLengthBuffer = ByteBuffer.allocate(256);
+        ByteBuffer encFileNameLengthBuffer = ByteBuffer.allocate(256);
+        ByteBuffer decFileNameLengthBuffer = ByteBuffer.allocate(4);
         ByteBuffer fileSizeBuffer = ByteBuffer.allocate(8);
-        ByteBuffer fileListInfoHeaderBuffer = null;
-        ByteBuffer encFileListInfoHeaderBuffer = ByteBuffer.allocate(256);
+        ByteBuffer encFileListInfoHeaderBuffer = ByteBuffer.allocate(256);        
         ByteBuffer[] informationBufferArr = null;
         ByteBuffer[] fileDetailsBufferArr = null;
         FileChannel fileChannel = null;
@@ -881,12 +1058,21 @@ public class SecureFileSharingServerWithEncryption {
         int command = NO_COMMAND;
         long encryptedFileListStringLength = 0;
         int fileNameLength = 0;
+        int encFileNameLength = 0;
+        int decFileNameLength = 0;
         long fileSize = 0;
         long c2cTransferCurrentPosition = 0;
         String information = "";
         String fileName = "";
         String fileNameWithoutExtension = "";
         String fileExtension = "";
+
+        final int ENCRYPTED_CHUNK_SIZE = 64 * 1024;
+        final int UNENCRYPTED_CHUNK_SIZE = ENCRYPTED_CHUNK_SIZE - 16;
+        
+        
+        ByteBuffer directFileChunkBuffer = ByteBuffer.allocateDirect(ENCRYPTED_CHUNK_SIZE);
+        ByteBuffer unencryptedFileChunkBuffer = ByteBuffer.allocate(UNENCRYPTED_CHUNK_SIZE);
 
         // This is used to track time and kill connections that do not complete
         // handshake on time
@@ -905,6 +1091,36 @@ public class SecureFileSharingServerWithEncryption {
         private ECPrivateKey serverECPrivateKey;
         private SecretKey secretKey;
 
+        Cipher encryptCipher;
+        Cipher decryptCipher;
+        Cipher rsaEncryptCipher;
+        Cipher rsaDecryptCipher;
+
+        private CurrentSession() throws Exception{
+            encryptCipher = Cipher.getInstance("AES/GCM/NoPadding");
+            decryptCipher = Cipher.getInstance("AES/GCM/NoPadding");
+            rsaEncryptCipher = Cipher.getInstance("RSA/ECB/OAEPPadding");
+            rsaDecryptCipher = Cipher.getInstance("RSA/ECB/OAEPPadding");
+        }
+
+        byte[] serverIV = new byte[IV_SIZE];        
+        byte[] clientIV = new byte[IV_SIZE];
+        long serverIVCounter = 0;
+        long clientIVCounter = 0;
+
+        // IV modifier is used to modify IV for each message
+        // IV modifier puts a long into the IV starting at the fourth byte
+        ByteBuffer serverIVModifierBuffer = ByteBuffer.wrap(serverIV, 4, 8);
+        ByteBuffer clientIVModifierBuffer = ByteBuffer.wrap(clientIV, 4, 8);
+
+        private void generateServerBaseIV() {
+            new SecureRandom().nextBytes(serverIV);
+        }
+
+        private void setupClientBaseIV(byte[] receivedClientBaseIV) {
+            clientIV = Arrays.copyOf(receivedClientBaseIV, IV_SIZE);
+        }
+
         private void secretKeySetup() throws Exception {
             KeyAgreement ka = KeyAgreement.getInstance("ECDH");
             ka.init(serverECPrivateKey);
@@ -918,75 +1134,39 @@ public class SecureFileSharingServerWithEncryption {
         }
 
         private byte[] encrypt(byte[] dataToEncrypt) throws Exception {
-            byte[] iv = new byte[IV_SIZE];
-            new SecureRandom().nextBytes(iv);
+            serverIVModifierBuffer.putLong(0, serverIVCounter++);
+            
+            GCMParameterSpec spec = new GCMParameterSpec(TAG_BIT_LENGTH, serverIV);
+            encryptCipher.init(Cipher.ENCRYPT_MODE, secretKey, spec);
+            encryptCipher.updateAAD(additionalDataBytes);
+            byte[] cipherText = encryptCipher.doFinal(dataToEncrypt);
 
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            GCMParameterSpec spec = new GCMParameterSpec(TAG_BIT_LENGTH, iv);
-            cipher.init(Cipher.ENCRYPT_MODE, secretKey, spec);
-            cipher.updateAAD(additionalDataBytes);
-            byte[] cipherText = cipher.doFinal(dataToEncrypt);
-
-            return ByteBuffer.allocate(iv.length + cipherText.length).put(iv).put(cipherText).array();
+            return cipherText;
         }
 
         private byte[] decrypt(byte[] encryptedData) throws Exception {
-            ByteBuffer buffer = ByteBuffer.wrap(encryptedData);
-            byte[] iv = new byte[IV_SIZE];
-            buffer.get(iv);
-            byte[] cipherText = new byte[buffer.remaining()];
-            buffer.get(cipherText);
+            clientIVModifierBuffer.putLong(0, clientIVCounter++);
 
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-            GCMParameterSpec spec = new GCMParameterSpec(TAG_BIT_LENGTH, iv);
-            cipher.init(Cipher.DECRYPT_MODE, secretKey, spec);
-            cipher.updateAAD(additionalDataBytes);
+            GCMParameterSpec spec = new GCMParameterSpec(TAG_BIT_LENGTH, clientIV);
+            decryptCipher.init(Cipher.DECRYPT_MODE, secretKey, spec);
+            decryptCipher.updateAAD(additionalDataBytes);
 
-            return cipher.doFinal(cipherText);
+            return decryptCipher.doFinal(encryptedData);
 
         }
 
-        // Handshake encryption and decryption methods
-
-        // Move this Method to Client class
-        // private byte[] encryptHandShakeAndMetadata(byte[] dataToEncrypt) throws
-        // Exception {
-        // new SecureRandom(nonceArray);
-        // byte[] handShakestringBytes =
-        // HANDSHAKE_STRING.getBytes(StandardCharsets.UTF_8);
-        // int handShakeStringLength = handShakestringBytes.length;
-        // byte[] clientPublickeyBytes = clientPublicKey.getEncoded();
-        // int bufferSize = nonceArray.length + 4 + handShakestringBytes.length +
-        // clientPublickeyBytes.length;
-        // ByteBuffer buffer = ByteBuffer.allocate(bufferSize);
-        // buffer.put(nonceArray).putInt(handShakeStringLength).put(handShakestringBytes).put(clientPublickeyBytes).flip();
-        // The code above will not be in the method. it will be runn before calling the
-        // method to encrypt the handshake
-
-        // change the encryption below to aes
-        // Cipher rsaCipher = Cipher.getInstance("RSA/ECB/OAEPPadding");
-        // OAEPParameterSpec spec = new OAEPParameterSpec("SHA-256", "MGF1",
-        // MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT);
-        // rsaCipher.init(Cipher.ENCRYPT_MODE, serverRSAPublicKey, spec);
-        // return rsaCipher.doFinal(buffer.array()); // Change the buffer array to the
-        // dataToEncrypt parameter
-
-        // }
-
         private byte[] rsaEncrypt(byte[] dataToEncrypt) throws Exception {
-            Cipher rsaCipher = Cipher.getInstance("RSA/ECB/OAEPPadding");
             OAEPParameterSpec spec = new OAEPParameterSpec("SHA-256", "MGF1",
                     MGF1ParameterSpec.SHA256, PSource.PSpecified.DEFAULT);
-            rsaCipher.init(Cipher.ENCRYPT_MODE, clientRSAPublicKey, spec);
-            return rsaCipher.doFinal(dataToEncrypt);
+            rsaEncryptCipher.init(Cipher.ENCRYPT_MODE, clientRSAPublicKey, spec);
+            return rsaEncryptCipher.doFinal(dataToEncrypt);
         }
 
         private byte[] rsaDecrypt(byte[] encryptedData) throws Exception {
-            Cipher rsacipher = Cipher.getInstance("RSA/ECB/OAEPPadding");
             OAEPParameterSpec spec = new OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256,
                     PSource.PSpecified.DEFAULT);
-            rsacipher.init(Cipher.DECRYPT_MODE, serverRSAPrivateKey, spec);
-            return rsacipher.doFinal(encryptedData);
+            rsaDecryptCipher.init(Cipher.DECRYPT_MODE, serverRSAPrivateKey, spec);
+            return rsaDecryptCipher.doFinal(encryptedData);
         }
     }
 
