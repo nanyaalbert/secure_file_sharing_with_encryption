@@ -86,8 +86,12 @@ public class SecureFileSharingServerWithEncryption {
         DEFAULT,
         SENDING_CHUNK,
         CHUNK_SENT,
+        ALL_CHUNK_SENT,
         RECEIVING_CHUNK,
-        CHUNK_RECEIVED
+        CHUNK_RECEIVED,
+        WRITING_CHUNK_TO_FILE,
+        CHUNK_WRITTEN_TO_FILE,
+        ALL_CHUNK_WRITTEN_TO_FILE
     }
 
     private static final String RSA_PUBLIC_KEY_STRING = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+TEpsZJxq1bDlcGsy4a//RRq3MMfYeE+1J6yL9LiqCf0hbdBE4y86sQjbUquoYi6VpTITiw7uzMg3wzRmkqABFtcbOtzNEeHSpqgMv88YRDlPbVutsE4JAxmm6BkA2cLqIgjM6jbZRrnR5kwaw/jWFmhOpazNRH/c6HWQ3KLFAUc/ZXBchm69gFOdtGJ939rzE9zzpLo5t+lp/kAbXbdug98Geo7Nky5A3rv3ooFAaRgwovCCKQWoKGFKndgk1TootJuLBH+DaeQ+sjDhlAByrygwuV9pPS31r1lYoWQ8Ls5RclfVIDxJLpmOxjx0x1Qn6ixnQ7P75Uy6rA9s3PiwIDAQAB";
@@ -599,7 +603,12 @@ public class SecureFileSharingServerWithEncryption {
             return;
         } else {
             keySession.encFileNameBuffer = ByteBuffer.allocate(keySession.decFileNameLength);
-            clientChannel.read(keySession.encFileNameBuffer);
+            bytesRead = clientChannel.read(keySession.encFileNameBuffer);
+            if (bytesRead < 0) {
+                System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
+                cancelKey(key);
+                return;
+            }
             if (keySession.encFileNameBuffer.position() < keySession.decFileNameLength)
                 return;
             keySession.encFileNameBuffer.flip();
@@ -699,6 +708,22 @@ public class SecureFileSharingServerWithEncryption {
                         return;
                     }
                 }
+                if (keySession.fileSize <= 0) {
+                    keySession.fileSize = Files.size(filePath);
+                    keySession.fileSizeBuffer.putLong(keySession.fileSize);
+                    keySession.fileSizeBuffer.flip();
+                    byte[] encFileSizeBytes;
+                    try {
+                        encFileSizeBytes = keySession.rsaEncrypt(keySession.fileSizeBuffer.array());
+                    } catch (Exception e) {
+                        System.err.println("An error occured while encrypting file size for client "
+                                + clientChannel.getRemoteAddress());
+                        cancelKey(key);
+                        return;
+                    }
+                    keySession.encFileSizeBuffer = ByteBuffer.wrap(encFileSizeBytes);
+                    keySession.encFileSizeBuffer.flip();
+                }
                 if (keySession.encFileNameLength <= 0) {
                     keySession.fileName = filePath.getFileName().toString();
                     byte[] fileNameBytes = keySession.fileName.getBytes(StandardCharsets.UTF_8);
@@ -731,11 +756,13 @@ public class SecureFileSharingServerWithEncryption {
 
                     /*
                      * encrypted command at the first 256 bytes
+                     * encrypted file size at the next 256 bytes
                      * encrypted filename length at the next 256 bytes
                      * encrypted filename at the remaining bytes
                      */
                     keySession.fileDetailsBufferArr = new ByteBuffer[] { keySession.encCommandSendBuffer,
-                            keySession.encFileNameLengthBuffer, keySession.encFileNameBuffer };
+                            keySession.encFileSizeBuffer, keySession.encFileNameLengthBuffer,
+                            keySession.encFileNameBuffer };
                     keySession.progressState = Progress.WRITING_FILEDETAILS;
                 }
                 if (keySession.progressState == Progress.WRITING_FILEDETAILS) {
@@ -824,11 +851,19 @@ public class SecureFileSharingServerWithEncryption {
                                 cancelKey(key);
                                 return;
                             } else if (bytesWritten > 0 && !keySession.directFileChunkBuffer.hasRemaining()) {
-                                keySession.chunkStatus = ChunkProgress.CHUNK_SENT;
+                                if (keySession.fileChannelPosition >= keySession.fileSize) {
+                                    keySession.chunkStatus = ChunkProgress.ALL_CHUNK_SENT;
+                                } else {
+                                    keySession.chunkStatus = ChunkProgress.CHUNK_SENT;
+                                }
                                 key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
                             } else if (bytesWritten == 0) {
                                 key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
                             }
+                        }
+                        if (keySession.chunkStatus == ChunkProgress.ALL_CHUNK_SENT) {
+                            resetCurrentSessionObj(keySession);
+                            return;
                         }
 
                     }
@@ -840,55 +875,71 @@ public class SecureFileSharingServerWithEncryption {
     }
 
     private static void serverReceiveFile2(SelectionKey key) throws IOException {
-
-    }
-
-    private static void serverReceiveFile(SelectionKey key) throws IOException {
         int bytesRead;
-        SocketChannel readyClient = (SocketChannel) key.channel();
+        long bytesWrittenToFile;
+        SocketChannel clientChannel = (SocketChannel) key.channel();
         CurrentSession keySession = (CurrentSession) key.attachment();
 
-        if (keySession.fileNameLengthBuffer.position() < 4) {
-            bytesRead = readyClient.read(keySession.fileNameLengthBuffer);
+        if (keySession.fileSize <= 0) {
+            bytesRead = clientChannel.read(keySession.encFileSizeBuffer);
             if (bytesRead < 0) {
+                System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                 cancelKey(key);
                 return;
+            } else if (bytesRead > 0
+                    && keySession.encFileSizeBuffer.position() == keySession.encFileSizeBuffer.capacity()) {
+                try {
+                    byte[] decFileSizeBytes = keySession.rsaDecrypt(keySession.encFileSizeBuffer.array());
+                    keySession.fileSizeBuffer.put(decFileSizeBytes).flip();
+                    keySession.fileSize = keySession.fileSizeBuffer.getLong();
+                } catch (Exception e) {
+                    System.err.println("An error occured while decrypting the file size for client "
+                            + clientChannel.getRemoteAddress());
+                    cancelKey(key);
+                    return;
+                }
             }
-            if (keySession.fileNameLengthBuffer.position() < 4)
-                return;
+
         }
-        if (keySession.fileNameLengthBuffer.position() == 4
-                && keySession.fileNameLength == 0) {
-            keySession.fileNameLength = keySession.fileNameLengthBuffer.getInt();
-        }
-        if (keySession.fileSizeBuffer.position() < 8) {
-            bytesRead = readyClient.read(keySession.fileSizeBuffer);
+        if (keySession.fileNameLength <= 0 && keySession.fileSize > 0) {
+            bytesRead = clientChannel.read(keySession.encFileNameLengthBuffer);
             if (bytesRead < 0) {
+                System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                 cancelKey(key);
                 return;
+            } else if (bytesRead > 0
+                    && keySession.encFileNameLengthBuffer.position() == keySession.encFileNameLengthBuffer.capacity()) {
+                try {
+                    byte[] decFileNameLengthBytes = keySession.rsaDecrypt(keySession.encFileNameLengthBuffer.array());
+                    keySession.fileNameLengthBuffer.put(decFileNameLengthBytes).flip();
+                    keySession.fileNameLength = keySession.fileNameLengthBuffer.getInt();
+                } catch (Exception e) {
+                    System.err.println("An error occured while decrypting the file name length for client "
+                            + clientChannel.getRemoteAddress());
+                    cancelKey(key);
+                    return;
+                }
             }
-            if (keySession.fileSizeBuffer.position() < 8)
-                return;
         }
-        if (keySession.fileNameLength > 0) {
-            keySession.fileNameBuffer = ByteBuffer.allocate(keySession.fileNameLength);
-            bytesRead = readyClient.read(keySession.fileNameBuffer);
+        if (keySession.fileNameLength > 0 && keySession.fileName.isEmpty()) {
+            bytesRead = clientChannel.read(keySession.encFileNameBuffer);
             if (bytesRead < 0) {
+                System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                 cancelKey(key);
                 return;
+            } else if (bytesRead > 0 && keySession.encFileNameBuffer.position() == keySession.fileNameLength) {
+                try {
+                    byte[] decFileNameBytes = keySession.decrypt(keySession.encFileNameBuffer.array());
+                    keySession.fileNameBuffer.put(decFileNameBytes).flip();
+                    keySession.fileName = new String(keySession.fileNameBuffer.array(), StandardCharsets.UTF_8);
+                } catch (Exception e) {
+                    System.err.println("An error occured while decrypting the file name for client "
+                            + clientChannel.getRemoteAddress());
+                    cancelKey(key);
+                    return;
+                }
             }
-            if (keySession.fileNameBuffer.position() < keySession.fileNameLength)
-                return;
-        }
-        if (keySession.fileNameBuffer.position() == keySession.fileNameLength
-                && keySession.fileName.isEmpty()) {
-            keySession.fileNameBuffer.flip();
-            keySession.fileName = new String(keySession.fileNameBuffer.array(),
-                    StandardCharsets.UTF_8);
-        }
-        if (keySession.fileSizeBuffer.position() == 8
-                && keySession.fileSize == 0) {
-            keySession.fileSize = keySession.fileSizeBuffer.getLong();
+
         }
         if (!keySession.fileName.isEmpty() && keySession.fileSize != 0) {
             Path filePath = serverDownloadPath.resolve(keySession.fileName);
@@ -918,42 +969,89 @@ public class SecureFileSharingServerWithEncryption {
                         break;
                     }
                 }
-            }
-            if (keySession.progressState == Progress.READING_FILEDATA) {
-                if (!keySession.fileChannel.isOpen()) {
-                    try {
-                        keySession.fileChannel = FileChannel.open(filePath, StandardOpenOption.WRITE);
-                    } catch (Exception e) {
-                        System.err.println(
-                                "An error occured while trying to open channel on " + filePath.toAbsolutePath());
-                        return;
-                    }
-                }
-                if (keySession.fileChannel.isOpen()) {
-                    long bytesReadToFile;
-                    bytesReadToFile = keySession.fileChannel.transferFrom(readyClient,
-                            keySession.c2cTransferCurrentPosition, keySession.fileSize);
-                    if (bytesReadToFile < 0) {
-                        keySession.fileChannel.close();
+            } else if (keySession.progressState == Progress.READING_FILEDATA) {
+                if (keySession.chunkStatus == ChunkProgress.DEFAULT
+                        || keySession.chunkStatus == ChunkProgress.CHUNK_WRITTEN_TO_FILE) {
+                    bytesRead = clientChannel.read(keySession.encChunkLengthBuffer);
+                    if (bytesRead < 0) {
                         cancelKey(key);
                         return;
-                    }
-                    if (bytesReadToFile > 0) {
-                        keySession.c2cTransferCurrentPosition += bytesReadToFile;
-                        if (keySession.c2cTransferCurrentPosition == keySession.fileSize) {
-                            System.out.println("File transfer completed for " + keySession.fileName);
-                            try {
-                                keySession.fileChannel.close();
-                            } catch (Exception e) {
-                                System.err.println("Failed to close file channel for " + keySession.fileName);
-                            }
-                            resetCurrentSessionObj(keySession);
+                    } else if (bytesRead > 0 && keySession.encChunkLengthBuffer
+                            .position() == keySession.encChunkLengthBuffer.capacity()) {
+                        try {
+                            byte[] decChunkLengthBytes = keySession.rsaDecrypt(keySession.encChunkLengthBuffer.array());
+                            keySession.chunkLengthBuffer.put(decChunkLengthBytes).flip();
+                            keySession.lengthOfEncryptedChunk = keySession.chunkLengthBuffer.getInt();
+                            keySession.chunkStatus = ChunkProgress.RECEIVING_CHUNK;
+                        } catch (Exception e) {
+                            System.err.println("An error occured while decrypting the chunk length for client "
+                                    + clientChannel.getRemoteAddress());
+                            cancelKey(key);
+                            return;
                         }
                     }
-                    if (bytesReadToFile == 0) {
-                        key.interestOps(key.interestOps() | SelectionKey.OP_READ);
+                }
+                if (keySession.chunkStatus == ChunkProgress.RECEIVING_CHUNK) {
+                    bytesRead = clientChannel.read(keySession.encryptedFileChunkBuffer);
+                    if (bytesRead < 0) {
+                        cancelKey(key);
+                        return;
+                    } else if (bytesRead > 0
+                            && keySession.encryptedFileChunkBuffer.position() == keySession.lengthOfEncryptedChunk) {
+                        try {
+                            byte[] decFileChunkBytes = keySession.decrypt(keySession.encryptedFileChunkBuffer.array());
+                            keySession.directFileChunkBuffer.put(decFileChunkBytes).flip();
+                            keySession.chunkStatus = ChunkProgress.WRITING_CHUNK_TO_FILE;
+                        } catch (Exception e) {
+                            System.err.println("An error occured while decrypting the file chunk for client "
+                                    + clientChannel.getRemoteAddress());
+                            cancelKey(key);
+                            return;
+                        }
                     }
                 }
+                if (keySession.chunkStatus == ChunkProgress.WRITING_CHUNK_TO_FILE) {
+                    AsynchronousFileChannel asyncFileChannel = AsynchronousFileChannel.open(filePath,
+                            StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+                    int prevOps = key.interestOps();
+                    key.interestOps(0);
+                    asyncFileChannel.write(keySession.directFileChunkBuffer, 0, key,
+                            new CompletionHandler<Integer, SelectionKey>() {
+                                @Override
+                                public void completed(Integer result, SelectionKey attachment) {
+                                    attachment.interestOps(prevOps);
+                                    CurrentSession keySession = (CurrentSession) attachment.attachment();
+                                    SocketChannel clientChannel = (SocketChannel) attachment.channel();
+                                    try {
+                                        if (asyncFileChannel.size() == keySession.fileSize) {
+                                            keySession.chunkStatus = ChunkProgress.ALL_CHUNK_WRITTEN_TO_FILE;
+                                            asyncFileChannel.close();
+                                        } else if (asyncFileChannel.size() < keySession.fileSize) {
+                                            keySession.chunkStatus = ChunkProgress.CHUNK_WRITTEN_TO_FILE;
+                                        }
+                                    } catch (Exception e) {
+                                        try {
+                                            System.err.println(
+                                                    "An error occured on the asynchronous file channel on file "
+                                                            + keySession.fileName + " for client "
+                                                            + clientChannel.getRemoteAddress());
+                                        } catch (Exception ex) {
+                                        }
+                                    }
+                                }
+
+                                @Override
+                                public void failed(Throwable exc, SelectionKey attachment) {
+                                    attachment.interestOps(prevOps);
+                                    System.err.println(
+                                            "An error occured while writing file chunk to file: " + exc.getMessage());
+                                }
+                            });
+                }
+                if (keySession.chunkStatus == ChunkProgress.ALL_CHUNK_WRITTEN_TO_FILE) {
+                    resetCurrentSessionObj(keySession);
+                }
+
             }
         }
 
@@ -1047,6 +1145,8 @@ public class SecureFileSharingServerWithEncryption {
         keySession.encInformationLengthBuffer.clear();
         keySession.decInformationLengthBuffer.clear();
         keySession.fileSizeBuffer.clear();
+        keySession.encFileSizeBuffer.clear();
+        keySession.decFileSizeBuffer.clear();
         keySession.chunkLengthBuffer.clear();
         keySession.encChunkLengthBuffer.clear();
         keySession.encFileListInfoHeaderBuffer.clear();
@@ -1060,6 +1160,7 @@ public class SecureFileSharingServerWithEncryption {
         keySession.fileNameLength = 0;
         keySession.encFileNameLength = 0;
         keySession.decFileNameLength = 0;
+        keySession.lengthOfEncryptedChunk = 0;
         keySession.fileSize = 0;
         keySession.c2cTransferCurrentPosition = 0;
         keySession.fileChannelPosition = 0;
@@ -1070,6 +1171,10 @@ public class SecureFileSharingServerWithEncryption {
 
         // clear nonce used in handshake
         keySession.nonceArray = null;
+
+        // reset buffers used in chunk transfer
+        keySession.directFileChunkBuffer.clear();
+        keySession.unencryptedFileChunkBuffer.clear();
     }
 
     private static class CurrentSession {
@@ -1101,6 +1206,8 @@ public class SecureFileSharingServerWithEncryption {
         ByteBuffer encFileNameLengthBuffer = ByteBuffer.allocate(256);
         ByteBuffer decFileNameLengthBuffer = ByteBuffer.allocate(4);
         ByteBuffer fileSizeBuffer = ByteBuffer.allocate(8);
+        ByteBuffer encFileSizeBuffer = ByteBuffer.allocate(256);
+        ByteBuffer decFileSizeBuffer = ByteBuffer.allocate(256);
         ByteBuffer chunkLengthBuffer = ByteBuffer.allocate(4);
         ByteBuffer encChunkLengthBuffer = ByteBuffer.allocate(256);
         ByteBuffer encFileListInfoHeaderBuffer = ByteBuffer.allocate(256);
@@ -1114,6 +1221,7 @@ public class SecureFileSharingServerWithEncryption {
         int fileNameLength = 0;
         int encFileNameLength = 0;
         int decFileNameLength = 0;
+        int lengthOfEncryptedChunk = 0;
         long fileSize = 0;
         long c2cTransferCurrentPosition = 0;
         long fileChannelPosition = 0;
@@ -1127,6 +1235,7 @@ public class SecureFileSharingServerWithEncryption {
 
         ByteBuffer directFileChunkBuffer = ByteBuffer.allocateDirect(ENCRYPTED_CHUNK_SIZE);
         ByteBuffer unencryptedFileChunkBuffer = ByteBuffer.allocate(UNENCRYPTED_CHUNK_SIZE);
+        ByteBuffer encryptedFileChunkBuffer = ByteBuffer.allocate(ENCRYPTED_CHUNK_SIZE);
 
         // This is used to track time and kill connections that do not complete
         // handshake on time
