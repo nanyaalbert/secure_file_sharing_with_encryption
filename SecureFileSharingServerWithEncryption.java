@@ -108,7 +108,7 @@ public class SecureFileSharingServerWithEncryption {
             serverRSAPrivateKey = (RSAPrivateKey) KeyFactory.getInstance("RSA")
                     .generatePrivate(new PKCS8EncodedKeySpec(rsaPrivateKeyBytes));
         } catch (Exception e) {
-            System.err.println("An error occured when loading the handshake keys: " + e.getMessage());
+            System.err.println("An error occured when loading the server rsa keys: " + e.getMessage());
             return;
         }
         server();
@@ -319,6 +319,7 @@ public class SecureFileSharingServerWithEncryption {
                         System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                         cancelKey(key);
                     } else if (bytesRead > 0 && keySession.encHandShakeReceiveBuffer.position() == encHandShakeLength) {
+                        System.out.println("Handshake read from client: " + clientChannel.getRemoteAddress());
                         keySession.encHandShakeReceiveBuffer.flip();
                         try {
                             decryptedHandShake = ByteBuffer
@@ -344,6 +345,8 @@ public class SecureFileSharingServerWithEncryption {
                         decryptedHandShake.get(handshakeStringArray);
                         String handShakeString = new String(handshakeStringArray, StandardCharsets.UTF_8);
                         if (!handShakeString.equals(HANDSHAKE_STRING)) {
+                            System.err.println("Client " + clientChannel.getRemoteAddress()
+                                    + " handshake string does not match. disconnecting...");
                             cancelKey(key);
                             return;
                         }
@@ -359,7 +362,7 @@ public class SecureFileSharingServerWithEncryption {
                         } catch (Exception e) {
                             System.err.println(
                                     "Could not generate handshake public key for " + clientChannel.getRemoteAddress()
-                                            + "try recoonecting...");
+                                            + " try reconnecting...");
                             cancelKey(key);
                             return;
                         }
@@ -389,11 +392,13 @@ public class SecureFileSharingServerWithEncryption {
                                     .put(keySession.rsaEncrypt(encLengthBuffer.array()));
                         } catch (Exception e) {
                             System.err.println("Could not encrypt handshake for " + clientChannel.getRemoteAddress()
-                                    + "try recoonecting...");
+                                    + " try recoonecting...");
                             cancelKey(key);
                             return;
                         }
                         keySession.progressState = Progress.WRITING_HANDSHAKE;
+                        System.out.println("Client " + clientChannel.getRemoteAddress()
+                                + " authenticated, proceeding to send handshake to client.");
 
                     }
                 }
@@ -874,7 +879,7 @@ public class SecureFileSharingServerWithEncryption {
         }
     }
 
-    private static void serverReceiveFile2(SelectionKey key) throws IOException {
+    private static void serverReceiveFile(SelectionKey key) throws IOException {
         int bytesRead;
         long bytesWrittenToFile;
         SocketChannel clientChannel = (SocketChannel) key.channel();
