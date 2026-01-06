@@ -46,7 +46,7 @@ public class SecureFileSharingClientWithEncryption {
     private static long TEMPFILENUMBER = 0;
     private static Path clientDownloadPath = Paths.get(System.getProperty("user.home"),
             "SecureFileSharingClientWithEncryption");
-    private static Path clientTempPath = Paths.get(System.getProperty("user.home"),
+    private static Path clientTempPath = Paths.get(System.getProperty("java.io.tmpdir"),
             "SecureFileSharingClientWithEncryptionTemp");
     private static String serverIPAdress;
     private static Scanner userInput = new Scanner(System.in);
@@ -192,30 +192,44 @@ public class SecureFileSharingClientWithEncryption {
         System.out.println("[4] EXIT     - Exit application.");
         System.out.println();
         System.out.print("Enter command: ");
+        String userRequest = userInput.nextLine();
     }
 
     private static void readHandShake(SocketChannel socketChannel, ServerSession serverSession) throws IOException {
-        // read the first 256 bytes to get the server's ecdh public key
+        // read the first 4 unencrypted bytes to get the server's ecdh public key length
+        // then read the server's ecdh public key
+        int bytesRead;
         if (serverSession.secretKey == null) {
-            serverSession.encServerECPublicKeyBuffer.clear();
-            while (serverSession.encServerECPublicKeyBuffer.position() < serverSession.encServerECPublicKeyBuffer
+            while (serverSession.serverECPublicKeyLengthBuffer.position() < serverSession.serverECPublicKeyLengthBuffer
                     .capacity()) {
-                socketChannel.read(serverSession.encServerECPublicKeyBuffer);
-            }
-            serverSession.encServerECPublicKeyBuffer.flip();
-            ByteBuffer decryptedServerECPublicKeyBuffer;
-            try {
-                decryptedServerECPublicKeyBuffer = ByteBuffer
-                        .wrap(serverSession.rsaDecrypt(serverSession.encServerECPublicKeyBuffer.array()));
-            } catch (Exception e) {
-                System.err.println("Failed to decrypt server's ecdh public key: " + e.getMessage());
-                cleanUpServerSessionObj(serverSession);
-                return;
+                bytesRead = socketChannel.read(serverSession.serverECPublicKeyLengthBuffer);
+                if (bytesRead < 0) {
+                    System.err.println("Server closed the connection");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
             }
 
+            if (serverSession.serverECPublicKeyLength == 0) {
+                serverSession.serverECPublicKeyLengthBuffer.flip();
+                serverSession.serverECPublicKeyLength = serverSession.serverECPublicKeyLengthBuffer.getInt();
+                serverSession.serverECPublicKeyBuffer = ByteBuffer.allocate(serverSession.serverECPublicKeyLength);
+            }
+
+            while (serverSession.serverECPublicKeyBuffer.position() < serverSession.serverECPublicKeyBuffer
+                    .capacity()) {
+                bytesRead = socketChannel.read(serverSession.serverECPublicKeyBuffer);
+                if (bytesRead < 0) {
+                    System.err.println("Server closed the connection");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
+            }
+
+            byte[] serverECPublicKeyDecodedBytes = Base64.getDecoder()
+                    .decode(serverSession.serverECPublicKeyBuffer.array());
             try {
-                X509EncodedKeySpec x509EncodedKeySpec = new X509EncodedKeySpec(
-                        decryptedServerECPublicKeyBuffer.array());
+                X509EncodedKeySpec x509EncodedKeySpec = new X509EncodedKeySpec(serverECPublicKeyDecodedBytes);
                 KeyFactory keyFactory = KeyFactory.getInstance("EC");
                 serverECPublicKey = (ECPublicKey) keyFactory.generatePublic(x509EncodedKeySpec);
             } catch (Exception e) {
@@ -235,36 +249,21 @@ public class SecureFileSharingClientWithEncryption {
             return; // Returned because this is called from writeHandshake()
         }
 
-        // read the next 256 bytes to determine the length of the remaining bytes
-        serverSession.encHandShakeReceiveLengthBuffer.clear();
-        while (serverSession.encHandShakeReceiveLengthBuffer.position() < serverSession.encHandShakeReceiveLengthBuffer
-                .capacity()) {
-            socketChannel.read(serverSession.encHandShakeReceiveLengthBuffer);
-        }
-        serverSession.encHandShakeReceiveLengthBuffer.flip();
-        int remainingBytesLength;
-        try {
-            ByteBuffer decryptedLengthBuffer = ByteBuffer
-                    .wrap(serverSession.rsaDecrypt(serverSession.encHandShakeReceiveLengthBuffer.array()));
-            remainingBytesLength = decryptedLengthBuffer.getInt();
-        } catch (Exception e) {
-            System.out.println("Failed to decrypt the hand shake length");
-            cleanUpServerSessionObj(serverSession);
-            return;
-        }
-
-        // read the remaining encrypted bytes containing the nonce, server iv and server
-        // ecdh public key
-        serverSession.encHandShakeReceiveBuffer = ByteBuffer.allocate(remainingBytesLength);
+        // read the next 256 bytes to get the nonce and server iv
+        serverSession.encHandShakeReceiveBuffer = ByteBuffer.allocate(256);
         while (serverSession.encHandShakeReceiveBuffer.position() < serverSession.encHandShakeReceiveBuffer
                 .capacity()) {
-            socketChannel.read(serverSession.encHandShakeReceiveBuffer);
+            bytesRead = socketChannel.read(serverSession.encHandShakeReceiveBuffer);
+            if (bytesRead < 0) {
+                System.err.println("Server closed the connection");
+                cleanUpServerSessionObj(serverSession);
+                return;
+            }
         }
         serverSession.encHandShakeReceiveBuffer.flip();
-
         try {
             serverSession.handShakeReceiveBuffer = ByteBuffer
-                    .wrap(serverSession.decrypt(serverSession.encHandShakeReceiveBuffer.array()));
+                    .wrap(serverSession.rsaDecrypt(serverSession.encHandShakeReceiveBuffer.array()));
         } catch (Exception e) {
             System.out.println("Failed to decrypt the hand shake");
             cleanUpServerSessionObj(serverSession);
@@ -285,6 +284,7 @@ public class SecureFileSharingClientWithEncryption {
 
     private static void writeHandShake(SocketChannel socketChannel, ServerSession serverSession) throws IOException {
         System.out.println("Starting handshake...");
+        int bytesWritten;
         /*
          * this buffer contains
          * the handshakestringlength at 16 -> 23,
@@ -298,39 +298,48 @@ public class SecureFileSharingClientWithEncryption {
          * secret.
          */
         int handShakeStringLength = HANDSHAKE_STRING.length();
-        String rsaPublicKeyString = Base64.getEncoder().encodeToString(clientRSAPublicKey.getEncoded());
-        int rsaPublicKeyStringLength = rsaPublicKeyString.length();
+        byte[] rsaPublicKeyEncodedBytes = Base64.getEncoder().encode(clientRSAPublicKey.getEncoded());
+        int rsaPublicKeyStringLength = rsaPublicKeyEncodedBytes.length;
         int capacityB = 4 + 4 + handShakeStringLength + rsaPublicKeyStringLength;
         ByteBuffer bufferB = ByteBuffer.allocate(capacityB);
         bufferB.putInt(handShakeStringLength);
         bufferB.putInt(rsaPublicKeyStringLength);
         bufferB.put(HANDSHAKE_STRING.getBytes(StandardCharsets.UTF_8));
-        bufferB.put(rsaPublicKeyString.getBytes(StandardCharsets.UTF_8));
+        bufferB.put(rsaPublicKeyEncodedBytes);
 
         /*
          * These buffer contains the following:
          * bytes 0-3: length of the remaining bytes after the first 256
          * bytes 4-19: nonce
          * remaining bytes: the client iv and the client ecdh public key
-         * all of this is encrypted with the server public rsa key
+         * all of this is rsa encrypted
          * and packed into 256 bytes
          */
         serverSession.generateClientBaseIV();
         serverSession.generateNonce();
-        String ecPublicKeyString = Base64.getEncoder().encodeToString(clientECPublicKey.getEncoded());
-        int ecPublicKeyStringLength = ecPublicKeyString.length();
+        byte[] ecPublicKeyEncodedBytes = Base64.getEncoder().encode(clientECPublicKey.getEncoded());
+        int ecPublicKeyStringLength = ecPublicKeyEncodedBytes.length;
         int capacityA = 4 + serverSession.IV_SIZE + serverSession.NONCE_SIZE + ecPublicKeyStringLength;
         ByteBuffer bufferA = ByteBuffer.allocate(capacityA);
-        bufferA.putInt(bufferB.capacity());
+        bufferA.putInt(bufferB.capacity() + 16); // aes-gcm encryption adds extra 16-byte tag
         bufferA.put(serverSession.nonceArray);
         bufferA.put(serverSession.clientIV);
-        bufferA.put(ecPublicKeyString.getBytes(StandardCharsets.UTF_8));
+        bufferA.put(ecPublicKeyEncodedBytes);
 
         bufferA.flip();
         bufferB.flip();
 
         try {
+            // this contains bufferA in encrypted form
             serverSession.encHandShakeReceiveLengthBuffer = ByteBuffer.wrap(serverSession.rsaEncrypt(bufferA.array()));
+            while (serverSession.encHandShakeReceiveLengthBuffer.hasRemaining()) {
+                bytesWritten = socketChannel.write(serverSession.encHandShakeReceiveLengthBuffer);
+                if (bytesWritten < 0) {
+                    System.err.println("Server closed the connection");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
+            }
             if (serverSession.secretKey == null) {
                 readHandShake(socketChannel, serverSession);
             }
@@ -341,12 +350,16 @@ public class SecureFileSharingClientWithEncryption {
             return;
         }
 
-        serverSession.encHandShakeBuffersArr = new ByteBuffer[] { serverSession.encHandShakeReceiveLengthBuffer,
-                serverSession.encHandShakeSendBuffer };
-
+        System.out.println("Point F");
         while (serverSession.encHandShakeSendBuffer.hasRemaining()) {
-            socketChannel.write(serverSession.encHandShakeBuffersArr);
+            bytesWritten = socketChannel.write(serverSession.encHandShakeSendBuffer);
+            if (bytesWritten < 0) {
+                System.err.println("Server closed the connection");
+                cleanUpServerSessionObj(serverSession);
+                return;
+            }
         }
+        System.out.println("Point G");
 
     }
 
@@ -378,7 +391,8 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.fileNameBuffer = null;
         serverSession.encFileNameBuffer = null;
         serverSession.decFileNameBuffer = null;
-        serverSession.encServerECPublicKeyBuffer = null;
+        serverSession.serverECPublicKeyBuffer = null;
+        serverSession.serverECPublicKeyLengthBuffer = null;
         serverSession.commandReceiveBuffer = null;
         serverSession.commandSendBuffer = null;
         serverSession.encCommandReceiveBuffer = null;
@@ -463,7 +477,8 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.fileNameBuffer = null;
         serverSession.encFileNameBuffer = null;
         serverSession.decFileNameBuffer = null;
-        serverSession.encServerECPublicKeyBuffer.clear();
+        serverSession.serverECPublicKeyBuffer = null;
+        serverSession.serverECPublicKeyLengthBuffer.clear();
         serverSession.commandReceiveBuffer.clear();
         serverSession.commandSendBuffer.clear();
         serverSession.encCommandReceiveBuffer.clear();
@@ -494,6 +509,7 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.encFileNameLength = 0;
         serverSession.decFileNameLength = 0;
         serverSession.lengthOfEncryptedChunk = 0;
+        serverSession.serverECPublicKeyLength = 0;
         serverSession.fileSize = 0;
         serverSession.c2cTransferCurrentPosition = 0;
         serverSession.fileChannelPosition = 0;
@@ -532,7 +548,8 @@ public class SecureFileSharingClientWithEncryption {
         ByteBuffer fileNameBuffer = null;
         ByteBuffer encFileNameBuffer = null;
         ByteBuffer decFileNameBuffer = null;
-        ByteBuffer encServerECPublicKeyBuffer = ByteBuffer.allocate(256);
+        ByteBuffer serverECPublicKeyBuffer = null;
+        ByteBuffer serverECPublicKeyLengthBuffer = ByteBuffer.allocate(4);
         ByteBuffer commandReceiveBuffer = ByteBuffer.allocate(4);
         ByteBuffer encCommandReceiveBuffer = ByteBuffer.allocate(256);
         ByteBuffer commandSendBuffer = ByteBuffer.allocate(4);
@@ -565,6 +582,7 @@ public class SecureFileSharingClientWithEncryption {
         int encFileNameLength = 0;
         int decFileNameLength = 0;
         int lengthOfEncryptedChunk = 0;
+        int serverECPublicKeyLength = 0;
         long fileSize = 0;
         long c2cTransferCurrentPosition = 0;
         long fileChannelPosition = 0;
@@ -585,7 +603,7 @@ public class SecureFileSharingClientWithEncryption {
         private static final int TAG_BIT_LENGTH = 128;
         private static final int NONCE_SIZE = 16;
         private byte[] nonceArray = new byte[NONCE_SIZE];
-        private String additionalData = "SERVER: " + serverIPAdress + " PORT: " + PORT;
+        private String additionalData = "SECURE_FILE_SHARING_V1";
         private byte[] additionalDataBytes = additionalData.getBytes();
         private SecretKey secretKey;
 
@@ -614,7 +632,7 @@ public class SecureFileSharingClientWithEncryption {
         SecureRandom secureRandom = new SecureRandom();
 
         private void generateClientBaseIV() {
-            secureRandom.nextBytes(serverIV);
+            secureRandom.nextBytes(clientIV);
         }
 
         private void generateNonce() {
@@ -622,7 +640,7 @@ public class SecureFileSharingClientWithEncryption {
         }
 
         private void setupServerBaseIV(byte[] receivedServerBaseIV) {
-            clientIV = Arrays.copyOf(receivedServerBaseIV, IV_SIZE);
+            System.arraycopy(receivedServerBaseIV, 0, serverIV, 0, IV_SIZE);
         }
 
         private void secretKeySetup() throws Exception {
@@ -638,22 +656,22 @@ public class SecureFileSharingClientWithEncryption {
         }
 
         private byte[] encrypt(byte[] dataToEncrypt) throws Exception {
-            clientIVModifierBuffer.putLong(0, clientIVCounter++);
-
             GCMParameterSpec spec = new GCMParameterSpec(TAG_BIT_LENGTH, clientIV);
             encryptCipher.init(Cipher.ENCRYPT_MODE, secretKey, spec);
             encryptCipher.updateAAD(additionalDataBytes);
             byte[] cipherText = encryptCipher.doFinal(dataToEncrypt);
 
+            clientIVModifierBuffer.putLong(0, clientIVCounter++);
+
             return cipherText;
         }
 
         private byte[] decrypt(byte[] encryptedData) throws Exception {
-            serverIVModifierBuffer.putLong(0, serverIVCounter++);
-
             GCMParameterSpec spec = new GCMParameterSpec(TAG_BIT_LENGTH, serverIV);
             decryptCipher.init(Cipher.DECRYPT_MODE, secretKey, spec);
             decryptCipher.updateAAD(additionalDataBytes);
+
+            serverIVModifierBuffer.putLong(0, serverIVCounter++);
 
             return decryptCipher.doFinal(encryptedData);
 
