@@ -541,45 +541,26 @@ public class SecureFileSharingServerWithEncryption {
             if (keySession.fileChannel == null || !keySession.fileChannel.isOpen())
                 return;
             long bytesWritten;
-            if (keySession.encFileListInfoHeaderBuffer == null) {
-                keySession.commandSendBuffer.clear().putInt(FILE_LIST);
+
+            if(keySession.encFileListInfoHeaderBuffer == null){
+                keySession.fileListInfoHeaderBuffer = ByteBuffer.allocate(4 + 8);
+                keySession.fileListInfoHeaderBuffer.putInt(FILE_LIST);
+                keySession.fileListInfoHeaderBuffer.putLong(keySession.fileChannel.size());
+                keySession.fileListInfoHeaderBuffer.flip();
                 try {
-                    byte[] encCommand = keySession.rsaEncrypt(keySession.commandSendBuffer.array());
-                    keySession.encCommandSendBuffer = ByteBuffer.wrap(encCommand);
+                    keySession.encFileListInfoHeaderBuffer = ByteBuffer.wrap(keySession.rsaEncrypt(keySession.fileListInfoHeaderBuffer.array()));
                 } catch (Exception e) {
-                    System.err.println(
-                            "An error occured while encrypting command for client " + clientChannel.getRemoteAddress());
-                    cancelKey(key);
+                    System.err.println("An error occured while encrypting the fie list info header");
+                    cleanUpCurrentSessionObj(keySession);
                     return;
                 }
-                keySession.encryptedFileListStringLength = keySession.fileChannel.size();
-                ByteBuffer encListLengthBuffer = ByteBuffer.allocate(8);
-                encListLengthBuffer.putLong(keySession.encryptedFileListStringLength).flip();
-                try {
-                    keySession.encFileListLengthBuffer.clear()
-                            .put(keySession.rsaEncrypt(encListLengthBuffer.array()))
-                            .flip();
-                } catch (Exception e) {
-                    System.err.println("An error occured while encrypting file list length for client "
-                            + clientChannel.getRemoteAddress());
-                    cancelKey(key);
-                    return;
-                }
-                int capacity = keySession.encCommandSendBuffer.capacity()
-                        + keySession.encFileListLengthBuffer.capacity();
-                keySession.encFileListInfoHeaderBuffer = ByteBuffer.allocate(capacity);
-                keySession.encFileListInfoHeaderBuffer.put(keySession.encCommandSendBuffer);
-                keySession.encFileListInfoHeaderBuffer.put(keySession.encFileListLengthBuffer);
-                keySession.encFileListInfoHeaderBuffer.flip();
             }
 
             bytesWritten = clientChannel.write(keySession.encFileListInfoHeaderBuffer);
             if (bytesWritten < 0) {
                 System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                 cancelKey(key);
-            } else if (bytesWritten > 0 && !keySession.encFileListLengthBuffer.hasRemaining()) {
-                keySession.commandReceiveBuffer.clear();
-                keySession.encFileListLengthBuffer.clear();
+            } else if (bytesWritten > 0 && !keySession.encFileListInfoHeaderBuffer.hasRemaining()) {
                 keySession.progressState = Progress.WRITING_FILELIST;
                 key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
             } else if (bytesWritten == 0) {
@@ -1196,6 +1177,7 @@ public class SecureFileSharingServerWithEncryption {
         keySession.decFileSizeBuffer = null;
         keySession.chunkLengthBuffer = null;
         keySession.encChunkLengthBuffer = null;
+        keySession.fileListInfoHeaderBuffer = null;
         keySession.encFileListInfoHeaderBuffer = null;
         keySession.informationBufferArr = null;
         keySession.fileDetailsBufferArr = null;
@@ -1284,6 +1266,7 @@ public class SecureFileSharingServerWithEncryption {
         keySession.chunkLengthBuffer.clear();
         keySession.encChunkLengthBuffer.clear();
         keySession.encFileListInfoHeaderBuffer.clear();
+        keySession.fileListInfoHeaderBuffer = null;
         keySession.informationBufferArr = null;
         keySession.fileDetailsBufferArr = null;
         keySession.encChunkLengthAndDataArr = null;
@@ -1355,6 +1338,7 @@ public class SecureFileSharingServerWithEncryption {
         ByteBuffer chunkLengthBuffer = ByteBuffer.allocate(4);
         ByteBuffer encChunkLengthBuffer = ByteBuffer.allocate(256);
         ByteBuffer encFileListInfoHeaderBuffer = ByteBuffer.allocate(256);
+        ByteBuffer fileListInfoHeaderBuffer = null;
         ByteBuffer[] informationBufferArr = null;
         ByteBuffer[] fileDetailsBufferArr = null;
         ByteBuffer[] encChunkLengthAndDataArr = null;
