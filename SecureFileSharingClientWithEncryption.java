@@ -2,12 +2,12 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -19,7 +19,6 @@ import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.MGF1ParameterSpec;
-import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 import java.util.Base64;
@@ -35,6 +34,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 public class SecureFileSharingClientWithEncryption {
     private static final int PORT = 1234;
+    private static final int EXIT = -1;
     private static final int NO_COMMAND = 0;
     private static final int FILE_SEND_REQUEST = 1;
     private static final int FILE_UPLOAD_REQUEST = 2;
@@ -175,6 +175,7 @@ public class SecureFileSharingClientWithEncryption {
     }
 
     private static void displayMainMenu(SocketChannel socketChannel, ServerSession serverSession) throws IOException {
+        System.out.println();
         System.out.println("==========================================================");
         System.out.println("    SECURE FILE SHARING WITH ENCRYPTION");
         System.out.println("==========================================================");
@@ -193,35 +194,171 @@ public class SecureFileSharingClientWithEncryption {
         System.out.println();
         System.out.print("Enter command: ");
         String userRequest = userInput.nextLine().trim();
+        String[] parts = userRequest.split(" ", 2);
+        String command = parts[0].trim().toUpperCase();
+        String argument = parts.length > 1 ? parts[1].trim() : "";
 
-        int bytesWritten;
-        if (userRequest.equalsIgnoreCase("LIST")) {
-            serverSession.commandSendBuffer.clear().putInt(FILE_LIST_REQUEST).flip();
-            byte[] exactCommandBytes = new byte[serverSession.commandSendBuffer.remaining()];
-            serverSession.commandSendBuffer.get(exactCommandBytes);
-            try {
-                serverSession.encCommandSendBuffer = ByteBuffer.wrap(serverSession.rsaEncrypt(exactCommandBytes));
-            } catch (Exception e) {
-                System.out.println("An error occured while encrypting the command.");
-                cleanUpServerSessionObj(serverSession);
-                return;
-            }
-            while (serverSession.encCommandSendBuffer.hasRemaining()) {
+        long bytesWritten;
+
+        switch (command) {
+            case "LIST" -> {
+                serverSession.commandSendBuffer.clear().putInt(FILE_LIST_REQUEST).flip();
                 try {
-                    bytesWritten = socketChannel.write(serverSession.encCommandSendBuffer);
-                    if (bytesWritten < 0) {
-                        System.err.println("Server closed the connection");
-                        cleanUpServerSessionObj(serverSession);
-                        return;
-                    }
+                    serverSession.encCommandSendBuffer = ByteBuffer
+                            .wrap(serverSession.rsaEncrypt(serverSession.commandSendBuffer.array()));
                 } catch (Exception e) {
-                    System.err.println("An error occured while writing command to server.");
-                    resetServerSessionObj(serverSession);
+                    System.out.println("An error occured while encrypting the command.");
+                    cleanUpServerSessionObj(serverSession);
                     return;
                 }
+                while (serverSession.encCommandSendBuffer.position() < serverSession.encCommandSendBuffer.capacity()) {
+                    try {
+                        bytesWritten = socketChannel.write(serverSession.encCommandSendBuffer);
+                        if (bytesWritten < 0) {
+                            System.err.println("Server closed the connection");
+                            cleanUpServerSessionObj(serverSession);
+                            return;
+                        }
+                    } catch (Exception e) {
+                        System.err.println("An error occured while writing command to server.");
+                        exitApplication(serverSession);
+                        return;
+                    }
+                }
+                clientReceiveFileList(socketChannel, serverSession);
+
             }
-            clientReceiveFileList(socketChannel, serverSession);
+            case "UPLOAD" -> {
+                serverSession.fileToSend = Paths.get(argument);
+                if (!Files.exists(serverSession.fileToSend)) {
+                    System.err.println("File does not exist, please check the file path");
+                    resetServerSessionObj(serverSession);
+                    displayMainMenu(socketChannel, serverSession);
+                    return;
+                }
+                if (Files.exists(serverSession.fileToSend) && !Files.isRegularFile(serverSession.fileToSend)) {
+                    System.err.println("The path specified is not a file");
+                    resetServerSessionObj(serverSession);
+                    displayMainMenu(socketChannel, serverSession);
+                    return;
+                }
+                serverSession.commandSendBuffer.clear().putInt(FILE_UPLOAD_REQUEST).flip();
+                try {
+                    serverSession.encCommandSendBuffer = ByteBuffer
+                            .wrap(serverSession.rsaEncrypt(serverSession.commandSendBuffer.array()));
+                } catch (Exception e) {
+                    System.out.println("An error occured while encrypting the command.");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
+                while (serverSession.encCommandSendBuffer.position() < serverSession.encCommandSendBuffer.capacity()) {
+                    try {
+                        bytesWritten = socketChannel.write(serverSession.encCommandSendBuffer);
+                        if (bytesWritten < 0) {
+                            System.err.println("Server closed the connection");
+                            cleanUpServerSessionObj(serverSession);
+                            return;
+                        }
+                    } catch (Exception e) {
+                        System.err.println("An error occured while writing command to server.");
+                        exitApplication(serverSession);
+                    }
+                }
+                clientSendFile(socketChannel, serverSession);
+
+            }
+            case "DOWNLOAD" -> {
+                serverSession.commandSendBuffer.clear().putInt(FILE_SEND_REQUEST).flip();
+                try {
+                    serverSession.encCommandSendBuffer = ByteBuffer
+                            .wrap(serverSession.rsaEncrypt(serverSession.commandSendBuffer.array()));
+                } catch (Exception e) {
+                    System.out.println("An error occured while encrypting the command.");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
+                while (serverSession.encCommandSendBuffer.position() < serverSession.encCommandSendBuffer.capacity()) {
+                    try {
+                        bytesWritten = socketChannel.write(serverSession.encCommandSendBuffer);
+                        if (bytesWritten < 0) {
+                            System.err.println("Server closed the connection");
+                            cleanUpServerSessionObj(serverSession);
+                            return;
+                        }
+                    } catch (Exception e) {
+                        System.err.println("An error occured while writing command to server.");
+                        exitApplication(serverSession);
+                    }
+                }
+                try {
+                    serverSession.encFileNameBuffer = ByteBuffer
+                            .wrap(serverSession.encrypt(argument.getBytes(StandardCharsets.UTF_8)));
+                } catch (Exception e) {
+                    System.out.println("An error occured while encrypting the file name.");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
+                serverSession.fileNameLengthBuffer.putInt(serverSession.encFileNameBuffer.capacity());
+                try {
+                    serverSession.encFileNameLengthBuffer = ByteBuffer
+                            .wrap(serverSession.rsaEncrypt(serverSession.fileNameLengthBuffer.array()));
+                } catch (Exception e) {
+                    System.out.println("An error occured while encrypting the file name length.");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
+                ByteBuffer[] fileSendRequest = { serverSession.encFileNameLengthBuffer,
+                        serverSession.encFileNameBuffer };
+                while (serverSession.encFileNameBuffer.position() < serverSession.encFileNameBuffer.capacity()) {
+                    try {
+                        bytesWritten = socketChannel.write(fileSendRequest);
+                        if (bytesWritten < 0) {
+                            System.err.println("Server closed the connection");
+                            cleanUpServerSessionObj(serverSession);
+                            return;
+                        }
+                    } catch (Exception e) {
+                        System.err.println("An error occured while writing file name and name length to server.");
+                        exitApplication(serverSession);
+                    }
+                }
+                clientReceiveFile(socketChannel, serverSession);
+
+            }
+            case "EXIT" -> {
+                serverSession.commandSendBuffer.clear().putInt(EXIT).flip();
+                try {
+                    serverSession.encCommandSendBuffer = ByteBuffer
+                            .wrap(serverSession.rsaEncrypt(serverSession.commandSendBuffer.array()));
+                } catch (Exception e) {
+                    System.out.println("An error occured while encrypting the command.");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
+                while (serverSession.encCommandSendBuffer.position() < serverSession.encCommandSendBuffer.capacity()) {
+                    try {
+                        bytesWritten = socketChannel.write(serverSession.encCommandSendBuffer);
+                        if (bytesWritten < 0) {
+                            System.err.println("Server closed the connection");
+                            cleanUpServerSessionObj(serverSession);
+                            return;
+                        }
+                    } catch (Exception e) {
+                        System.err.println("An error occured while writing command to server.");
+                        exitApplication(serverSession);
+                    }
+                }
+                exitApplication(serverSession);
+
+            }
+            default -> {
+                System.out.println("Invalid command.");
+                resetServerSessionObj(serverSession);
+                displayMainMenu(socketChannel, serverSession);
+                return;
+            }
         }
+
     }
 
     private static void readHandShake(SocketChannel socketChannel, ServerSession serverSession) throws IOException {
@@ -379,7 +516,6 @@ public class SecureFileSharingClientWithEncryption {
             return;
         }
 
-        System.out.println("Point F");
         while (serverSession.encHandShakeSendBuffer.hasRemaining()) {
             bytesWritten = socketChannel.write(serverSession.encHandShakeSendBuffer);
             if (bytesWritten < 0) {
@@ -388,46 +524,367 @@ public class SecureFileSharingClientWithEncryption {
                 return;
             }
         }
-        System.out.println("Point G");
 
     }
 
     private static void clientReceiveFileList(SocketChannel socketChannel, ServerSession serverSession)
             throws IOException {
+        int bytesRead;
         // read the first 256 bytes to get
         // 1. The command
         // 2. The file list length
         serverSession.encFileListInfoHeaderBuffer.clear();
-        int bytesRead = socketChannel.read(serverSession.encFileListInfoHeaderBuffer);
-        if (bytesRead < 0) {
-            System.err.println("Server closed the connection");
-            cleanUpServerSessionObj(serverSession);
-            return;
+        while (serverSession.encFileListInfoHeaderBuffer.position() < serverSession.encFileListInfoHeaderBuffer
+                .capacity()) {
+            bytesRead = socketChannel.read(serverSession.encFileListInfoHeaderBuffer);
+            if (bytesRead < 0) {
+                System.err.println("Server closed the connection");
+                cleanUpServerSessionObj(serverSession);
+                return;
+            }
         }
-        if (serverSession.encFileListInfoHeaderBuffer.hasRemaining()) {
-            return;
-        }
+
         serverSession.encFileListInfoHeaderBuffer.flip();
         try {
             serverSession.fileListInfoHeaderBuffer = ByteBuffer
                     .wrap(serverSession.rsaDecrypt(serverSession.encFileListInfoHeaderBuffer.array()));
         } catch (Exception e) {
-            System.err.println("An error occured while sending file info details");
+            System.err.println("An error occured while decrypting file list info details");
             cleanUpServerSessionObj(serverSession);
             return;
         }
-        // resume work here. read the actual file list.
+        int commandReceived = serverSession.fileListInfoHeaderBuffer.getInt();
+        if (commandReceived != FILE_LIST) {
+            System.out.println("Invalid command received from server; expected a file list command");
+            cleanUpServerSessionObj(serverSession);
+            return;
+        }
+        long lengthOfEncFileList = serverSession.fileListInfoHeaderBuffer.getLong();
+        // create a buffer to receive the encrypted file list
+        serverSession.encFileListBuffer = ByteBuffer.allocate((int) lengthOfEncFileList);
+        while (serverSession.encFileListBuffer.position() < serverSession.encFileListBuffer.capacity()) {
+            socketChannel.read(serverSession.encFileListBuffer);
+        }
+        serverSession.encFileListBuffer.flip();
+        try {
+            serverSession.decFileListBuffer = ByteBuffer
+                    .wrap(serverSession.decrypt(serverSession.encFileListBuffer.array()));
+        } catch (Exception e) {
+            System.err.println("An error occured while decrypting file list");
+            cleanUpServerSessionObj(serverSession);
+            return;
+        }
+        String fileList = new String(serverSession.decFileListBuffer.array(), StandardCharsets.UTF_8);
+        System.out.println("\n" + fileList);
+        resetServerSessionObj(serverSession);
+        displayMainMenu(socketChannel, serverSession);
+        return;
 
     }
 
-    private static void clientReceiveInformation(SocketChannel socketChannel, ServerSession serverSession)
+    private static void clientPrintInformation(SocketChannel socketChannel, ServerSession serverSession)
             throws IOException {
+        // this method is called from clientReceiveFileMethod when the client sends a
+        // request to download a file that does not exist on the server
+        // read 4 bytes read to determine the length of the encrypted information
+        // then the encrypted information is read
+
+        int informationLength = serverSession.informationDetailsBuffer.getInt();
+        serverSession.encInformationBuffer = ByteBuffer.allocate(informationLength);
+        while (serverSession.encInformationBuffer.position() < serverSession.encInformationBuffer.capacity()) {
+            socketChannel.read(serverSession.encInformationBuffer);
+        }
+        serverSession.encInformationBuffer.flip();
+        try {
+            serverSession.decInformationBuffer = ByteBuffer
+                    .wrap(serverSession.decrypt(serverSession.encInformationBuffer.array()));
+        } catch (Exception e) {
+            System.err.println("An error occured while decrypting information");
+            return;
+        }
+        String information = new String(serverSession.decInformationBuffer.array(), StandardCharsets.UTF_8);
+        System.out.println(information);
     }
 
     private static void clientSendFile(SocketChannel socketChannel, ServerSession serverSession) throws IOException {
+        long bytesWritten;
+        serverSession.fileName = serverSession.fileToSend.getFileName().toString();
+        serverSession.fileSize = Files.size(serverSession.fileToSend);
+        try {
+            serverSession.encFileNameBuffer = ByteBuffer
+                    .wrap(serverSession.encrypt(serverSession.fileName.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception e) {
+            System.err.println("An error occured while encrypting file name");
+            cleanUpServerSessionObj(serverSession);
+            return;
+        }
+        serverSession.fileNameLengthBuffer.putInt(serverSession.encFileNameBuffer.capacity()).flip();
+        serverSession.unEncFileDetails256 = ByteBuffer.allocate(8 + 4); // 8 bytes for file size and 4 bytes for file
+                                                                        // name length
+        serverSession.unEncFileDetails256.putLong(serverSession.fileSize)
+                .putInt(serverSession.encFileNameBuffer.capacity()).flip();
+        try {
+            serverSession.encFileDetails256 = ByteBuffer
+                    .wrap(serverSession.rsaEncrypt(serverSession.unEncFileDetails256.array()));
+        } catch (Exception e) {
+            System.err.println("An error occured while encrypting file details");
+            cleanUpServerSessionObj(serverSession);
+            return;
+        }
+        // send the first 256 bytes which is encrypted and contain the file size and
+        // file name length
+        while (serverSession.encFileDetails256.position() < serverSession.encFileDetails256.capacity()) {
+            bytesWritten = socketChannel.write(serverSession.encFileDetails256);
+            if (bytesWritten < 0) {
+                System.err.println("Server closed the connection");
+                cleanUpServerSessionObj(serverSession);
+                return;
+            }
+        }
+        // send the file name
+        while (serverSession.encFileNameBuffer.position() < serverSession.encFileNameBuffer.capacity()) {
+            bytesWritten = socketChannel.write(serverSession.encFileNameBuffer);
+            if (bytesWritten < 0) {
+                System.err.println("Server closed the connection");
+                cleanUpServerSessionObj(serverSession);
+                return;
+            }
+        }
+        // send the file in chunks
+        if (!serverSession.fileChannel.isOpen()) {
+            try {
+                serverSession.fileChannel = FileChannel.open(serverSession.fileToSend, StandardOpenOption.READ);
+                serverSession.fileSize = serverSession.fileChannel.size();
+            } catch (Exception e) {
+                System.err
+                        .println("Could not send file chunk; an error occured while opening fileChannel on the file : "
+                                + serverSession.fileName);
+                cleanUpServerSessionObj(serverSession);
+                return;
+            }
+        }
+        if (serverSession.fileChannel.isOpen()) {
+            long bytesReadFromFile = 0;
+            while (serverSession.fileChannel.position() < serverSession.fileSize) {
+                serverSession.unencryptedFileChunkBuffer.clear();
+                while (serverSession.unencryptedFileChunkBuffer.position() < serverSession.unencryptedFileChunkBuffer
+                        .capacity()) {
+                    bytesReadFromFile = serverSession.fileChannel.read(serverSession.unencryptedFileChunkBuffer,
+                            serverSession.fileChannelPosition);
+                    if (bytesReadFromFile < 0) {
+                        return;
+                    }
+                }
+                serverSession.unencryptedFileChunkBuffer.flip();
+                serverSession.fileChannelPosition += bytesReadFromFile;
+
+                byte[] encFileChunkBytes;
+                try {
+                    encFileChunkBytes = serverSession
+                            .encrypt(serverSession.unencryptedFileChunkBuffer.array());
+                } catch (Exception e) {
+                    System.err.println("An error occured while encrypting the file chunk");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
+                serverSession.directFileChunkBuffer.put(encFileChunkBytes).flip();
+                serverSession.chunkLengthBuffer.putInt(serverSession.directFileChunkBuffer.remaining())
+                        .flip();
+                byte[] encLengthBytes;
+                try {
+                    encLengthBytes = serverSession.rsaEncrypt(serverSession.chunkLengthBuffer.array());
+                } catch (Exception e) {
+                    System.err.println(
+                            "An error occured while encrypting the length of the file chunk");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
+                serverSession.encChunkLengthBuffer.put(encLengthBytes).flip();
+
+                /*
+                 * Encrypted chunk length at the first 256 bytes
+                 * Encrypted chunk at the remaining bytes
+                 */
+                serverSession.encChunkLengthAndDataArr = new ByteBuffer[] {
+                        serverSession.encChunkLengthBuffer,
+                        serverSession.directFileChunkBuffer
+                };
+
+                while (serverSession.encChunkLengthAndDataArr[0].position() < serverSession.encChunkLengthAndDataArr[0]
+                        .capacity()) {
+                    bytesWritten = socketChannel.write(serverSession.encChunkLengthAndDataArr);
+                    if (bytesWritten < 0) {
+                        System.err.println("Server closed the connection");
+                        cleanUpServerSessionObj(serverSession);
+                        return;
+                    }
+                }
+                serverSession.printProgress(serverSession.fileChannel.position(), serverSession.fileSize);
+
+            }
+            displayMainMenu(socketChannel, serverSession);
+            return;
+
+        }
     }
 
     private static void clientReceiveFile(SocketChannel socketChannel, ServerSession serverSession) throws IOException {
+        // read the first 256 encrypted bytes
+        // decrypt and read the first 4 bytes to get the command
+        // possible commands: FILE_DOWNLOAD, INFORMATION
+        int bytesRead;
+        while (serverSession.encFileDetails256.position() < serverSession.encFileDetails256.capacity()) {
+            bytesRead = socketChannel.read(serverSession.encFileDetails256);
+            if (bytesRead < 0) {
+                System.err.println("Server closed the connection");
+                cleanUpServerSessionObj(serverSession);
+                return;
+            }
+        }
+        serverSession.encFileDetails256.flip();
+        try {
+            serverSession.unEncFileDetails256 = ByteBuffer
+                    .wrap(serverSession.rsaDecrypt(serverSession.encFileDetails256.array()));
+        } catch (Exception e) {
+            System.err.println("An error occured while decrypting file details");
+            cleanUpServerSessionObj(serverSession);
+            return;
+        }
+        int command = serverSession.unEncFileDetails256.getInt();
+        if (command == FILE_DOWNLOAD) {
+            // next 8 bytes is the file size
+            // next 4 bytes is the length of the encrypted file name
+            serverSession.fileSize = serverSession.unEncFileDetails256.getLong();
+            serverSession.fileNameLength = serverSession.unEncFileDetails256.getInt();
+
+            // read the encrypted file name, decrypt it and create the empty file
+            serverSession.encFileNameBuffer = ByteBuffer.allocate(serverSession.fileNameLength);
+            while (serverSession.encFileNameBuffer.position() < serverSession.encFileNameBuffer.capacity()) {
+                bytesRead = socketChannel.read(serverSession.encFileNameBuffer);
+                if (bytesRead < 0) {
+                    System.err.println("Server closed the connection");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
+            }
+            try {
+                serverSession.fileNameBuffer = ByteBuffer
+                        .wrap(serverSession.decrypt(serverSession.encFileNameBuffer.array()));
+            } catch (Exception e) {
+                System.out.println("An error occured while decrypting file name");
+                cleanUpServerSessionObj(serverSession);
+                return;
+            }
+            serverSession.fileName = new String(serverSession.fileNameBuffer.array(), StandardCharsets.UTF_8);
+            if (serverSession.fileName.isBlank() && serverSession.fileSize > 0) {
+                Path filePath = clientDownloadPath.resolve(serverSession.fileName);
+                int lastDotIndex = serverSession.fileName.lastIndexOf(".");
+                serverSession.fileExtension = serverSession.fileName.substring(lastDotIndex);
+                serverSession.fileNameWithoutExtension = serverSession.fileName.substring(0, lastDotIndex);
+
+                int counter = 0;
+                while (true) {
+                    if (Files.exists(filePath)) {
+                        counter++;
+                        filePath = clientDownloadPath
+                                .resolve(serverSession.fileNameWithoutExtension + "(" + counter + ")"
+                                        + serverSession.fileExtension);
+                        serverSession.fileName = filePath.getFileName().toString();
+                        int lastDotIndexNew = filePath.getFileName().toString().lastIndexOf(".");
+                        serverSession.fileExtension = filePath.getFileName().toString().substring(lastDotIndexNew);
+                        serverSession.fileNameWithoutExtension = filePath.getFileName().toString().substring(0,
+                                lastDotIndexNew);
+                    } else {
+                        try {
+                            Files.createFile(filePath);
+                        } catch (Exception e) {
+                            System.err.println("Failed to create file: " + filePath.toAbsolutePath());
+                            cleanUpServerSessionObj(serverSession);
+                            return;
+                        }
+                        break;
+                    }
+                }
+
+                // get the length of the chunk to be received
+                // receive and decrypt the chunk
+                // append the decrypted chunk to file
+                // repeat until the file size is reached
+                while (serverSession.fileChannel.size() < serverSession.fileSize) {
+                    while (serverSession.encChunkLengthBuffer.position() < serverSession.encChunkLengthBuffer
+                            .capacity()) {
+                        bytesRead = socketChannel.read(serverSession.encChunkLengthBuffer);
+                        if (bytesRead < 0) {
+                            System.err.println("Server closed the connection");
+                            cleanUpServerSessionObj(serverSession);
+                            return;
+                        }
+                    }
+                    try {
+                        byte[] decChunkLengthBytes = serverSession
+                                .rsaDecrypt(serverSession.encChunkLengthBuffer.array());
+                        serverSession.chunkLengthBuffer.put(decChunkLengthBytes).flip();
+                        serverSession.lengthOfEncryptedChunk = serverSession.chunkLengthBuffer.getInt();
+                    } catch (Exception e) {
+                        System.err.println("An error occured while decrypting the chunk length from server");
+                        cleanUpServerSessionObj(serverSession);
+                        return;
+                    }
+
+                    while (serverSession.encryptedFileChunkBuffer.position() < serverSession.encryptedFileChunkBuffer
+                            .capacity()) {
+                        bytesRead = socketChannel.read(serverSession.encryptedFileChunkBuffer);
+                        if (bytesRead < 0) {
+                            System.err.println("Server closed the connection");
+                            cleanUpServerSessionObj(serverSession);
+                            return;
+                        }
+                    }
+                    try {
+                        byte[] decFileChunkBytes = serverSession
+                                .decrypt(serverSession.encryptedFileChunkBuffer.array());
+                        serverSession.directFileChunkBuffer.put(decFileChunkBytes).flip();
+                    } catch (Exception e) {
+                        System.err.println("An error occured while decrypting the file chunk from server");
+                        cleanUpServerSessionObj(serverSession);
+                        return;
+                    }
+
+                    serverSession.fileChannel = FileChannel.open(clientDownloadPath.resolve(serverSession.fileName),
+                            StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+                    serverSession.fileChannel.write(serverSession.directFileChunkBuffer);
+                    serverSession.fileChannel.force(true);
+                    serverSession.printProgress(serverSession.fileChannel.size(), serverSession.fileSize);
+                }
+                serverSession.fileChannel.close();
+                resetServerSessionObj(serverSession);
+                displayMainMenu(socketChannel, serverSession);
+                return;
+
+            }
+
+        } else if (command == INFORMATION) {
+            serverSession.informationDetailsBuffer = ByteBuffer.allocate(serverSession.unEncFileDetails256.remaining());
+            serverSession.informationDetailsBuffer.put(serverSession.unEncFileDetails256);
+            clientPrintInformation(socketChannel, serverSession);
+            resetServerSessionObj(serverSession);
+            displayMainMenu(socketChannel, serverSession);
+            return;
+
+        } else {
+            System.err.println("Invalid Command Received; expected FILE_DOWNLOAD or INFORMATION");
+            exitApplication(serverSession);
+        }
+    }
+
+    private static void exitApplication(ServerSession serverSession) {
+        cleanUpServerSessionObj(serverSession);
+        try {
+            Files.deleteIfExists(clientTempPath);
+        } catch (IOException e) {
+            System.err.println("An error occured while deleting the temporary folder.");
+        }
+        System.exit(0);
     }
 
     private static void cleanUpServerSessionObj(ServerSession serverSession) {
@@ -436,6 +893,9 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.encHandShakeSendBuffer = null;
         serverSession.handShakeReceiveBuffer = null;
         serverSession.encHandShakeReceiveBuffer = null;
+        serverSession.informationDetailsBuffer = null;
+        serverSession.encInformationDetailsBuffer = null;
+        serverSession.decInformationDetailsBuffer = null;
         serverSession.informationBuffer = null;
         serverSession.encInformationStringBuffer = null;
         serverSession.decInformationStringBuffer = null;
@@ -467,6 +927,10 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.encChunkLengthBuffer = null;
         serverSession.encFileListInfoHeaderBuffer = null;
         serverSession.fileListInfoHeaderBuffer = null;
+        serverSession.unEncFileDetails256 = null;
+        serverSession.encFileDetails256 = null;
+        serverSession.encFileListBuffer = null;
+        serverSession.decFileListBuffer = null;
         serverSession.informationBufferArr = null;
         serverSession.fileDetailsBufferArr = null;
         serverSession.encChunkLengthAndDataArr = null;
@@ -485,6 +949,8 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.fileName = null;
         serverSession.fileNameWithoutExtension = null;
         serverSession.fileExtension = null;
+
+        serverSession.fileToSend = null;
 
         // clear nonce used in handshake
         serverSession.nonceArray = null;
@@ -523,6 +989,9 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.encHandShakeSendBuffer = null;
         serverSession.handShakeReceiveBuffer = null;
         serverSession.encHandShakeReceiveBuffer = null;
+        serverSession.informationDetailsBuffer = null;
+        serverSession.encInformationDetailsBuffer = null;
+        serverSession.decInformationDetailsBuffer = null;
         serverSession.informationBuffer = null;
         serverSession.encInformationStringBuffer = null;
         serverSession.decInformationStringBuffer = null;
@@ -554,6 +1023,10 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.encChunkLengthBuffer.clear();
         serverSession.encFileListInfoHeaderBuffer.clear();
         serverSession.fileListInfoHeaderBuffer = null;
+        serverSession.unEncFileDetails256 = null;
+        serverSession.encFileDetails256.clear();
+        serverSession.encFileListBuffer = null;
+        serverSession.decFileListBuffer = null;
         serverSession.informationBufferArr = null;
         serverSession.fileDetailsBufferArr = null;
         serverSession.encChunkLengthAndDataArr = null;
@@ -572,6 +1045,8 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.fileName = "";
         serverSession.fileNameWithoutExtension = "";
         serverSession.fileExtension = "";
+
+        serverSession.fileToSend = null;
 
         if (serverSession.fileChannel != null && serverSession.fileChannel.isOpen()) {
             try {
@@ -595,6 +1070,9 @@ public class SecureFileSharingClientWithEncryption {
         ByteBuffer encHandShakeSendBuffer = null;
         ByteBuffer handShakeReceiveBuffer = null;
         ByteBuffer encHandShakeReceiveBuffer = null;
+        ByteBuffer informationDetailsBuffer = null;
+        ByteBuffer encInformationDetailsBuffer = null;
+        ByteBuffer decInformationDetailsBuffer = null;
         ByteBuffer informationBuffer = null;
         ByteBuffer encInformationStringBuffer = null;
         ByteBuffer decInformationStringBuffer = null;
@@ -626,6 +1104,10 @@ public class SecureFileSharingClientWithEncryption {
         ByteBuffer encChunkLengthBuffer = ByteBuffer.allocate(256);
         ByteBuffer encFileListInfoHeaderBuffer = ByteBuffer.allocate(256);
         ByteBuffer fileListInfoHeaderBuffer = null;
+        ByteBuffer unEncFileDetails256 = null;
+        ByteBuffer encFileDetails256 = ByteBuffer.allocate(256);
+        ByteBuffer encFileListBuffer = null;
+        ByteBuffer decFileListBuffer = null;
         ByteBuffer[] informationBufferArr = null;
         ByteBuffer[] fileDetailsBufferArr = null;
         ByteBuffer[] encChunkLengthAndDataArr = null;
@@ -647,6 +1129,8 @@ public class SecureFileSharingClientWithEncryption {
         String fileNameWithoutExtension = "";
         String fileExtension = "";
 
+        Path fileToSend;
+
         final int ENCRYPTED_CHUNK_SIZE = 64 * 1024;
         final int UNENCRYPTED_CHUNK_SIZE = ENCRYPTED_CHUNK_SIZE - 16;
 
@@ -655,9 +1139,9 @@ public class SecureFileSharingClientWithEncryption {
         ByteBuffer encryptedFileChunkBuffer = ByteBuffer.allocate(ENCRYPTED_CHUNK_SIZE);
 
         // Encryption and Decryption
-        private static final int IV_SIZE = 12;
-        private static final int TAG_BIT_LENGTH = 128;
-        private static final int NONCE_SIZE = 16;
+        private final int IV_SIZE = 12;
+        private final int TAG_BIT_LENGTH = 128;
+        private final int NONCE_SIZE = 16;
         private byte[] nonceArray = new byte[NONCE_SIZE];
         private String additionalData = "SECURE_FILE_SHARING_V1";
         private byte[] additionalDataBytes = additionalData.getBytes();
@@ -745,6 +1229,33 @@ public class SecureFileSharingClientWithEncryption {
                     PSource.PSpecified.DEFAULT);
             rsaDecryptCipher.init(Cipher.DECRYPT_MODE, clientRSAPrivateKey, spec);
             return rsaDecryptCipher.doFinal(encryptedData);
+        }
+
+        private long totalNumberOfBars = 20;
+
+        private void printProgress(long current, long total) {
+            long percentage = (current * 100) / total;
+            long currentNumberOfBars = (current * totalNumberOfBars) / total;
+            StringBuilder msg = new StringBuilder().append("[");
+            for (int i = 1; i <= totalNumberOfBars; i++) {
+                if (i <= currentNumberOfBars) {
+                    msg.append("#");
+                } else
+                    msg.append("_");
+            }
+            msg.append("]").append(" " + percentage + "% ").append(current + "/" + total + " bytes");
+            println(msg.toString());
+        }
+
+        private int lastLineLength = 0;
+
+        private void println(String message) {
+            System.out.print("\r " + message);
+            int currentLineLength = "\r ".length() + message.length();
+            for (int i = currentLineLength; i < lastLineLength; i++) {
+                System.out.print(" ");
+            }
+            lastLineLength = currentLineLength;
         }
     }
 
