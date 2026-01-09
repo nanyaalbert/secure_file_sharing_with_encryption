@@ -291,6 +291,7 @@ public class SecureFileSharingClientWithEncryption {
                     }
                 }
                 try {
+                    System.out.println("DEBUG: encrypting file name " + argument);
                     serverSession.encFileNameBuffer = ByteBuffer
                             .wrap(serverSession.encrypt(argument.getBytes(StandardCharsets.UTF_8)));
                 } catch (Exception e) {
@@ -298,6 +299,7 @@ public class SecureFileSharingClientWithEncryption {
                     cleanUpServerSessionObj(serverSession);
                     return;
                 }
+                System.out.println("DEBUG: encrypted file name " + argument);
                 serverSession.fileNameLengthBuffer.putInt(serverSession.encFileNameBuffer.capacity());
                 try {
                     serverSession.encFileNameLengthBuffer = ByteBuffer
@@ -307,6 +309,8 @@ public class SecureFileSharingClientWithEncryption {
                     cleanUpServerSessionObj(serverSession);
                     return;
                 }
+                System.out.println("DEBUG: encrypting file name length");
+                System.out.println("DEBUG: performing scattering write");
                 ByteBuffer[] fileSendRequest = { serverSession.encFileNameLengthBuffer,
                         serverSession.encFileNameBuffer };
                 while (serverSession.encFileNameBuffer.position() < serverSession.encFileNameBuffer.capacity()) {
@@ -322,6 +326,7 @@ public class SecureFileSharingClientWithEncryption {
                         exitApplication(serverSession);
                     }
                 }
+                System.out.println("DEBUG: completed scattering write");
                 clientReceiveFile(socketChannel, serverSession);
 
             }
@@ -588,12 +593,15 @@ public class SecureFileSharingClientWithEncryption {
         // request to download a file that does not exist on the server
         // read 4 bytes read to determine the length of the encrypted information
         // then the encrypted information is read
+        System.out.println("DEBUG: POINT P1");
 
         int informationLength = serverSession.informationDetailsBuffer.getInt();
         serverSession.encInformationBuffer = ByteBuffer.allocate(informationLength);
+        System.out.println("DEBUG: POINT P2");
         while (serverSession.encInformationBuffer.position() < serverSession.encInformationBuffer.capacity()) {
             socketChannel.read(serverSession.encInformationBuffer);
         }
+        System.out.println("DEBUG: POINT P3");
         serverSession.encInformationBuffer.flip();
         try {
             serverSession.decInformationBuffer = ByteBuffer
@@ -602,8 +610,11 @@ public class SecureFileSharingClientWithEncryption {
             System.err.println("An error occured while decrypting information");
             return;
         }
+        System.out.println("DEBUG: POINT P4");
         String information = new String(serverSession.decInformationBuffer.array(), StandardCharsets.UTF_8);
+        System.out.println("DEBUG: POINT P5");
         System.out.println(information);
+        System.out.println("DEBUG: POINT P6");
     }
 
     private static void clientSendFile(SocketChannel socketChannel, ServerSession serverSession) throws IOException {
@@ -618,7 +629,6 @@ public class SecureFileSharingClientWithEncryption {
             cleanUpServerSessionObj(serverSession);
             return;
         }
-        serverSession.fileNameLengthBuffer.putInt(serverSession.encFileNameBuffer.capacity()).flip();
         serverSession.unEncFileDetails256 = ByteBuffer.allocate(8 + 4); // 8 bytes for file size and 4 bytes for file
                                                                         // name length
         serverSession.unEncFileDetails256.putLong(serverSession.fileSize)
@@ -665,31 +675,39 @@ public class SecureFileSharingClientWithEncryption {
         }
         if (serverSession.fileChannel.isOpen()) {
             long bytesReadFromFile = 0;
-            while (serverSession.fileChannel.position() < serverSession.fileSize) {
+            while (serverSession.fileChannelPosition < serverSession.fileSize) {
                 serverSession.unencryptedFileChunkBuffer.clear();
-                while (serverSession.unencryptedFileChunkBuffer.position() < serverSession.unencryptedFileChunkBuffer
-                        .capacity()) {
-                    bytesReadFromFile = serverSession.fileChannel.read(serverSession.unencryptedFileChunkBuffer,
+                while (true) {
+                    bytesReadFromFile = serverSession.fileChannel.read(serverSession.unencryptedFileChunkBuffer.clear(),
                             serverSession.fileChannelPosition);
                     if (bytesReadFromFile < 0) {
+                        System.err.println("Server closed the connection");
+                        cleanUpServerSessionObj(serverSession);
                         return;
                     }
+                    serverSession.fileChannelPosition += bytesReadFromFile;
+                    if (serverSession.fileChannelPosition < serverSession.fileSize
+                            && serverSession.unencryptedFileChunkBuffer
+                                    .position() < serverSession.unencryptedFileChunkBuffer.capacity()) {
+                        continue; // continue reading from the file
+                    }
+                    break;
                 }
                 serverSession.unencryptedFileChunkBuffer.flip();
-                serverSession.fileChannelPosition += bytesReadFromFile;
 
+                byte[] validBytes = new byte[serverSession.unencryptedFileChunkBuffer.remaining()];
+                serverSession.unencryptedFileChunkBuffer.get(validBytes);
                 byte[] encFileChunkBytes;
                 try {
                     encFileChunkBytes = serverSession
-                            .encrypt(serverSession.unencryptedFileChunkBuffer.array());
+                            .encrypt(validBytes);
                 } catch (Exception e) {
                     System.err.println("An error occured while encrypting the file chunk");
                     cleanUpServerSessionObj(serverSession);
                     return;
                 }
-                serverSession.directFileChunkBuffer.put(encFileChunkBytes).flip();
-                serverSession.chunkLengthBuffer.putInt(serverSession.directFileChunkBuffer.remaining())
-                        .flip();
+                serverSession.directFileChunkBuffer.clear().put(encFileChunkBytes).flip();
+                serverSession.chunkLengthBuffer.clear().putInt(serverSession.directFileChunkBuffer.remaining()).flip();
                 byte[] encLengthBytes;
                 try {
                     encLengthBytes = serverSession.rsaEncrypt(serverSession.chunkLengthBuffer.array());
@@ -699,7 +717,7 @@ public class SecureFileSharingClientWithEncryption {
                     cleanUpServerSessionObj(serverSession);
                     return;
                 }
-                serverSession.encChunkLengthBuffer.put(encLengthBytes).flip();
+                serverSession.encChunkLengthBuffer.clear().put(encLengthBytes).flip();
 
                 /*
                  * Encrypted chunk length at the first 256 bytes
@@ -719,7 +737,7 @@ public class SecureFileSharingClientWithEncryption {
                         return;
                     }
                 }
-                serverSession.printProgress(serverSession.fileChannel.position(), serverSession.fileSize);
+                serverSession.printProgress(serverSession.fileChannelPosition, serverSession.fileSize);
 
             }
             displayMainMenu(socketChannel, serverSession);
@@ -732,6 +750,7 @@ public class SecureFileSharingClientWithEncryption {
         // read the first 256 encrypted bytes
         // decrypt and read the first 4 bytes to get the command
         // possible commands: FILE_DOWNLOAD, INFORMATION
+        System.out.println("DEBUG: POINT 1");
         int bytesRead;
         while (serverSession.encFileDetails256.position() < serverSession.encFileDetails256.capacity()) {
             bytesRead = socketChannel.read(serverSession.encFileDetails256);
@@ -741,8 +760,10 @@ public class SecureFileSharingClientWithEncryption {
                 return;
             }
         }
+        System.out.println("DEBUG: POINT 2");
         serverSession.encFileDetails256.flip();
         try {
+            System.out.println("DEBUG: POINT 3");
             serverSession.unEncFileDetails256 = ByteBuffer
                     .wrap(serverSession.rsaDecrypt(serverSession.encFileDetails256.array()));
         } catch (Exception e) {
@@ -750,13 +771,16 @@ public class SecureFileSharingClientWithEncryption {
             cleanUpServerSessionObj(serverSession);
             return;
         }
+        System.out.println("DEBUG: POINT 4");
         int command = serverSession.unEncFileDetails256.getInt();
+        System.out.println("DEBUG: POINT 5");
         if (command == FILE_DOWNLOAD) {
+            System.out.println("DEBUG: POINT D1");
             // next 8 bytes is the file size
             // next 4 bytes is the length of the encrypted file name
             serverSession.fileSize = serverSession.unEncFileDetails256.getLong();
             serverSession.fileNameLength = serverSession.unEncFileDetails256.getInt();
-
+            System.out.println("DEBUG: POINT D2");
             // read the encrypted file name, decrypt it and create the empty file
             serverSession.encFileNameBuffer = ByteBuffer.allocate(serverSession.fileNameLength);
             while (serverSession.encFileNameBuffer.position() < serverSession.encFileNameBuffer.capacity()) {
@@ -767,6 +791,7 @@ public class SecureFileSharingClientWithEncryption {
                     return;
                 }
             }
+            System.out.println("DEBUG: POINT D3");
             try {
                 serverSession.fileNameBuffer = ByteBuffer
                         .wrap(serverSession.decrypt(serverSession.encFileNameBuffer.array()));
@@ -775,12 +800,16 @@ public class SecureFileSharingClientWithEncryption {
                 cleanUpServerSessionObj(serverSession);
                 return;
             }
+            System.out.println("DEBUG: POINT D4");
             serverSession.fileName = new String(serverSession.fileNameBuffer.array(), StandardCharsets.UTF_8);
-            if (serverSession.fileName.isBlank() && serverSession.fileSize > 0) {
+            System.out.println("DEBUG: POINT D5");
+            if (!serverSession.fileName.isBlank() && serverSession.fileSize > 0) {
+                System.out.println("DEBUG: POINT D6");
                 Path filePath = clientDownloadPath.resolve(serverSession.fileName);
                 int lastDotIndex = serverSession.fileName.lastIndexOf(".");
                 serverSession.fileExtension = serverSession.fileName.substring(lastDotIndex);
                 serverSession.fileNameWithoutExtension = serverSession.fileName.substring(0, lastDotIndex);
+                System.out.println("DEBUG: POINT D7");
 
                 int counter = 0;
                 while (true) {
@@ -805,12 +834,23 @@ public class SecureFileSharingClientWithEncryption {
                         break;
                     }
                 }
+                System.out.println("DEBUG: POINT D8");
+                // open the file channel
+                try {
+                    serverSession.fileChannel = FileChannel.open(filePath, StandardOpenOption.WRITE,
+                            StandardOpenOption.APPEND);
+                } catch (IOException e) {
+                    System.err.println("Failed to open file channel");
+                    cleanUpServerSessionObj(serverSession);
+                    return;
+                }
 
                 // get the length of the chunk to be received
                 // receive and decrypt the chunk
                 // append the decrypted chunk to file
                 // repeat until the file size is reached
                 while (serverSession.fileChannel.size() < serverSession.fileSize) {
+                    serverSession.encChunkLengthBuffer.clear();
                     while (serverSession.encChunkLengthBuffer.position() < serverSession.encChunkLengthBuffer
                             .capacity()) {
                         bytesRead = socketChannel.read(serverSession.encChunkLengthBuffer);
@@ -823,16 +863,17 @@ public class SecureFileSharingClientWithEncryption {
                     try {
                         byte[] decChunkLengthBytes = serverSession
                                 .rsaDecrypt(serverSession.encChunkLengthBuffer.array());
-                        serverSession.chunkLengthBuffer.put(decChunkLengthBytes).flip();
+                        serverSession.chunkLengthBuffer.clear().put(decChunkLengthBytes).flip();
                         serverSession.lengthOfEncryptedChunk = serverSession.chunkLengthBuffer.getInt();
+                        serverSession.encChunkLengthBuffer.clear();
                     } catch (Exception e) {
                         System.err.println("An error occured while decrypting the chunk length from server");
                         cleanUpServerSessionObj(serverSession);
                         return;
                     }
 
-                    while (serverSession.encryptedFileChunkBuffer.position() < serverSession.encryptedFileChunkBuffer
-                            .capacity()) {
+                    serverSession.encryptedFileChunkBuffer.clear();
+                    while (serverSession.encryptedFileChunkBuffer.position() < serverSession.lengthOfEncryptedChunk) {
                         bytesRead = socketChannel.read(serverSession.encryptedFileChunkBuffer);
                         if (bytesRead < 0) {
                             System.err.println("Server closed the connection");
@@ -840,22 +881,23 @@ public class SecureFileSharingClientWithEncryption {
                             return;
                         }
                     }
+                    serverSession.encryptedFileChunkBuffer.flip();
                     try {
+                        byte[] validEncryptedBytes = new byte[serverSession.encryptedFileChunkBuffer.remaining()];
+                        serverSession.encryptedFileChunkBuffer.get(validEncryptedBytes);
                         byte[] decFileChunkBytes = serverSession
-                                .decrypt(serverSession.encryptedFileChunkBuffer.array());
-                        serverSession.directFileChunkBuffer.put(decFileChunkBytes).flip();
+                                .decrypt(validEncryptedBytes);
+                        serverSession.directFileChunkBuffer.clear().put(decFileChunkBytes).flip();
                     } catch (Exception e) {
                         System.err.println("An error occured while decrypting the file chunk from server");
                         cleanUpServerSessionObj(serverSession);
                         return;
                     }
-
-                    serverSession.fileChannel = FileChannel.open(clientDownloadPath.resolve(serverSession.fileName),
-                            StandardOpenOption.WRITE, StandardOpenOption.APPEND);
                     serverSession.fileChannel.write(serverSession.directFileChunkBuffer);
                     serverSession.fileChannel.force(true);
                     serverSession.printProgress(serverSession.fileChannel.size(), serverSession.fileSize);
                 }
+                System.out.println("\nReceived file " + serverSession.fileName + " from server");
                 serverSession.fileChannel.close();
                 resetServerSessionObj(serverSession);
                 displayMainMenu(socketChannel, serverSession);
@@ -864,9 +906,15 @@ public class SecureFileSharingClientWithEncryption {
             }
 
         } else if (command == INFORMATION) {
+            System.out.println("DEBUG: POINT I1");
+            System.out.println(
+                    "DEBUG: POINT -- unEncFileDetails remains " + serverSession.unEncFileDetails256.remaining());
             serverSession.informationDetailsBuffer = ByteBuffer.allocate(serverSession.unEncFileDetails256.remaining());
-            serverSession.informationDetailsBuffer.put(serverSession.unEncFileDetails256);
+            System.out.println("DEBUG: POINT I2");
+            serverSession.informationDetailsBuffer.put(serverSession.unEncFileDetails256).flip();
+            System.out.println("DEBUG: POINT I3");
             clientPrintInformation(socketChannel, serverSession);
+            System.out.println("DEBUG: POINT I4");
             resetServerSessionObj(serverSession);
             displayMainMenu(socketChannel, serverSession);
             return;
@@ -897,7 +945,6 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.encInformationDetailsBuffer = null;
         serverSession.decInformationDetailsBuffer = null;
         serverSession.informationBuffer = null;
-        serverSession.encInformationStringBuffer = null;
         serverSession.decInformationStringBuffer = null;
         serverSession.encInformationBuffer = null;
         serverSession.decInformationBuffer = null;
@@ -993,7 +1040,6 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.encInformationDetailsBuffer = null;
         serverSession.decInformationDetailsBuffer = null;
         serverSession.informationBuffer = null;
-        serverSession.encInformationStringBuffer = null;
         serverSession.decInformationStringBuffer = null;
         serverSession.encInformationBuffer = null;
         serverSession.decInformationBuffer = null;
@@ -1074,7 +1120,6 @@ public class SecureFileSharingClientWithEncryption {
         ByteBuffer encInformationDetailsBuffer = null;
         ByteBuffer decInformationDetailsBuffer = null;
         ByteBuffer informationBuffer = null;
-        ByteBuffer encInformationStringBuffer = null;
         ByteBuffer decInformationStringBuffer = null;
         ByteBuffer encInformationBuffer = null;
         ByteBuffer decInformationBuffer = null;
@@ -1243,7 +1288,7 @@ public class SecureFileSharingClientWithEncryption {
                 } else
                     msg.append("_");
             }
-            msg.append("]").append(" " + percentage + "% ").append(current + "/" + total + " bytes");
+            msg.append("]").append(" " + percentage + "% ").append(current + "/" + total + " bytes.");
             println(msg.toString());
         }
 
