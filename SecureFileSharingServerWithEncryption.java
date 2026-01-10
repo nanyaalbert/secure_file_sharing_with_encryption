@@ -104,8 +104,10 @@ public class SecureFileSharingServerWithEncryption {
         ALL_CHUNK_WRITTEN_TO_FILE
     }
 
-    private static final String RSA_PUBLIC_KEY_STRING = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+TEpsZJxq1bDlcGsy4a//RRq3MMfYeE+1J6yL9LiqCf0hbdBE4y86sQjbUquoYi6VpTITiw7uzMg3wzRmkqABFtcbOtzNEeHSpqgMv88YRDlPbVutsE4JAxmm6BkA2cLqIgjM6jbZRrnR5kwaw/jWFmhOpazNRH/c6HWQ3KLFAUc/ZXBchm69gFOdtGJ939rzE9zzpLo5t+lp/kAbXbdug98Geo7Nky5A3rv3ooFAaRgwovCCKQWoKGFKndgk1TootJuLBH+DaeQ+sjDhlAByrygwuV9pPS31r1lYoWQ8Ls5RclfVIDxJLpmOxjx0x1Qn6ixnQ7P75Uy6rA9s3PiwIDAQAB";
-    private static final String RSA_PRIVATE_KEY_STRING = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC35MSmxknGrVsOVwazLhr/9FGrcwx9h4T7UnrIv0uKoJ/SFt0ETjLzqxCNtSq6hiLpWlMhOLDu7MyDfDNGaSoAEW1xs63M0R4dKmqAy/zxhEOU9tW62wTgkDGaboGQDZwuoiCMzqNtlGudHmTBrD+NYWaE6lrM1Ef9zodZDcosUBRz9lcFyGbr2AU520Yn3f2vMT3POkujm36Wn+QBtdt26D3wZ6js2TLkDeu/eigUBpGDCi8IIpBagoYUqd2CTVOii0m4sEf4Np5D6yMOGUAHKvKDC5X2k9LfWvWVihZDwuzlFyV9UgPEkumY7GPHTHVCfqLGdDs/vlTLqsD2zc+LAgMBAAECggEAHb2CzFIPRnFs44HRlJLlTPXPa4H8yCRtrlOlhefiKLZXgput/O9EsEG/OJvPIEFnTgQMo7fObaWgYbdpd360izRGVfgwKIq9awwcE15qNwkkAOh2onSfck3/p7EthQWed7BCwWL97U/uo4dx1hysXoodEWvxaWT/i52mKBHh246FiyEzzH9cpTPKtx7CgyDwq8kdORF7XD2a8DDMrUBBnc8JeTY9glOysnOx2y0GYAq2JMOIfTM/7JtNvBAnIGvnNhW6BDA01Bw2ubpeklBHzq69Jrv4AbjAGNyLcB47//75KYaASxseCnk0sEqcFfSe7oFZBVgI9ojR2H9LAXFsmQKBgQDIqioRfivmbg/Cg2QH4dGzqbG5KbJfwlzyBoLQeWqdNmmIHBA4cs2GS6q8Dv4ABgPgM5g5TNM2+64MqhctkIgmW7yCEAfFMVX82v3TWQvXNVv8pe3dgiBrXyfcD98xtNCymJckraUS7cThAZQ38DvWsQ0CR1gLoJlffTPVOIM0xwKBgQDqmqgwO9zqRNGDZa+aAqAcmIxRs/tQrY6pNq43WbQ3Xd+njIRMc1mj5X/M5+U1rO/Gstftvk+vKohiJdwbxlFe+/VZpJhaGF6Rwo6r+u5kz58XvUFN8lffvrFRNBX8P0PvK5ZZaix9ip6d6yYd3ap0OXiYMfzNtwNT6DJKF5mDHQKBgHT1shWGHCJwbmEq4kgx2F/G/h717dEg4bn0D5Vh38GIsJQz/0RXrfGj8v0wI95xoxqwF/72B3pZ0gXxshbN0n3BJKwOmejXK854+k+Q7HTg1h/5ux5MNYc/7GS5H5fCU451oEsxpzDUQ9f+apz8OnSVuAZm/SuxzRO6T1btXJSLAoGAdjaN7xgK/iTFKZ+Qd1tBUIdxlS3KweFiVFOQP6W80HVF4EhG1br9/T8EQbzL21sTyxyM/2f5APu+ky4elgQ9Nk5hV9U/S46iAHJ3r6MWgse3k5+yi1NFAiI1eQR025EJazecX9vHJU83E73MjBoI7N2UraPqjcHdNGd5B6qSmOUCgYEAozffWpGd0aCBAb2CJriEmGTwm4Yr+Yp0/yqWv9RFYP1PnFvKDY1vpaktankZTNeVwY2J0Cc1GNiUGnPn9V+nbLK/kPdqZ6Q8aTvln9vRYkRYl6KUdQetARiI8/mPXUK8Io8+eieHjVIN/SELQC+Lu66sUwjoQi3lu5Z3Zg6ECE4=";
+    private static final byte[] ENCODED_RSA_PUBLIC_KEY_BYTES = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+TEpsZJxq1bDlcGsy4a//RRq3MMfYeE+1J6yL9LiqCf0hbdBE4y86sQjbUquoYi6VpTITiw7uzMg3wzRmkqABFtcbOtzNEeHSpqgMv88YRDlPbVutsE4JAxmm6BkA2cLqIgjM6jbZRrnR5kwaw/jWFmhOpazNRH/c6HWQ3KLFAUc/ZXBchm69gFOdtGJ939rzE9zzpLo5t+lp/kAbXbdug98Geo7Nky5A3rv3ooFAaRgwovCCKQWoKGFKndgk1TootJuLBH+DaeQ+sjDhlAByrygwuV9pPS31r1lYoWQ8Ls5RclfVIDxJLpmOxjx0x1Qn6ixnQ7P75Uy6rA9s3PiwIDAQAB"
+            .getBytes(StandardCharsets.UTF_8);
+    private static final byte[] ENCODED_RSA_PRIVATE_KEY_BYTES = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC35MSmxknGrVsOVwazLhr/9FGrcwx9h4T7UnrIv0uKoJ/SFt0ETjLzqxCNtSq6hiLpWlMhOLDu7MyDfDNGaSoAEW1xs63M0R4dKmqAy/zxhEOU9tW62wTgkDGaboGQDZwuoiCMzqNtlGudHmTBrD+NYWaE6lrM1Ef9zodZDcosUBRz9lcFyGbr2AU520Yn3f2vMT3POkujm36Wn+QBtdt26D3wZ6js2TLkDeu/eigUBpGDCi8IIpBagoYUqd2CTVOii0m4sEf4Np5D6yMOGUAHKvKDC5X2k9LfWvWVihZDwuzlFyV9UgPEkumY7GPHTHVCfqLGdDs/vlTLqsD2zc+LAgMBAAECggEAHb2CzFIPRnFs44HRlJLlTPXPa4H8yCRtrlOlhefiKLZXgput/O9EsEG/OJvPIEFnTgQMo7fObaWgYbdpd360izRGVfgwKIq9awwcE15qNwkkAOh2onSfck3/p7EthQWed7BCwWL97U/uo4dx1hysXoodEWvxaWT/i52mKBHh246FiyEzzH9cpTPKtx7CgyDwq8kdORF7XD2a8DDMrUBBnc8JeTY9glOysnOx2y0GYAq2JMOIfTM/7JtNvBAnIGvnNhW6BDA01Bw2ubpeklBHzq69Jrv4AbjAGNyLcB47//75KYaASxseCnk0sEqcFfSe7oFZBVgI9ojR2H9LAXFsmQKBgQDIqioRfivmbg/Cg2QH4dGzqbG5KbJfwlzyBoLQeWqdNmmIHBA4cs2GS6q8Dv4ABgPgM5g5TNM2+64MqhctkIgmW7yCEAfFMVX82v3TWQvXNVv8pe3dgiBrXyfcD98xtNCymJckraUS7cThAZQ38DvWsQ0CR1gLoJlffTPVOIM0xwKBgQDqmqgwO9zqRNGDZa+aAqAcmIxRs/tQrY6pNq43WbQ3Xd+njIRMc1mj5X/M5+U1rO/Gstftvk+vKohiJdwbxlFe+/VZpJhaGF6Rwo6r+u5kz58XvUFN8lffvrFRNBX8P0PvK5ZZaix9ip6d6yYd3ap0OXiYMfzNtwNT6DJKF5mDHQKBgHT1shWGHCJwbmEq4kgx2F/G/h717dEg4bn0D5Vh38GIsJQz/0RXrfGj8v0wI95xoxqwF/72B3pZ0gXxshbN0n3BJKwOmejXK854+k+Q7HTg1h/5ux5MNYc/7GS5H5fCU451oEsxpzDUQ9f+apz8OnSVuAZm/SuxzRO6T1btXJSLAoGAdjaN7xgK/iTFKZ+Qd1tBUIdxlS3KweFiVFOQP6W80HVF4EhG1br9/T8EQbzL21sTyxyM/2f5APu+ky4elgQ9Nk5hV9U/S46iAHJ3r6MWgse3k5+yi1NFAiI1eQR025EJazecX9vHJU83E73MjBoI7N2UraPqjcHdNGd5B6qSmOUCgYEAozffWpGd0aCBAb2CJriEmGTwm4Yr+Yp0/yqWv9RFYP1PnFvKDY1vpaktankZTNeVwY2J0Cc1GNiUGnPn9V+nbLK/kPdqZ6Q8aTvln9vRYkRYl6KUdQetARiI8/mPXUK8Io8+eieHjVIN/SELQC+Lu66sUwjoQi3lu5Z3Zg6ECE4="
+            .getBytes(StandardCharsets.UTF_8);
     private static RSAPublicKey serverRSAPublicKey;
     private static RSAPrivateKey serverRSAPrivateKey;
 
@@ -129,17 +131,30 @@ public class SecureFileSharingServerWithEncryption {
             System.err.println("An error occured while trying to open selector " + e.getMessage());
             return;
         }
+
+        byte[] decodedRSAPublicKeyBytes;
+        byte[] decodedRSAPrivateKeyBytes;
         try {
-            byte[] rsaPublicKeyBytes = Base64.getDecoder().decode(RSA_PUBLIC_KEY_STRING);
-            byte[] rsaPrivateKeyBytes = Base64.getDecoder().decode(RSA_PRIVATE_KEY_STRING);
+            decodedRSAPublicKeyBytes = Base64.getDecoder().decode(ENCODED_RSA_PUBLIC_KEY_BYTES);
+            decodedRSAPrivateKeyBytes = Base64.getDecoder().decode(ENCODED_RSA_PRIVATE_KEY_BYTES);
             serverRSAPublicKey = (RSAPublicKey) KeyFactory.getInstance("RSA")
-                    .generatePublic(new X509EncodedKeySpec(rsaPublicKeyBytes));
+                    .generatePublic(new X509EncodedKeySpec(decodedRSAPublicKeyBytes));
             serverRSAPrivateKey = (RSAPrivateKey) KeyFactory.getInstance("RSA")
-                    .generatePrivate(new PKCS8EncodedKeySpec(rsaPrivateKeyBytes));
+                    .generatePrivate(new PKCS8EncodedKeySpec(decodedRSAPrivateKeyBytes));
         } catch (Exception e) {
             System.err.println("An error occured when loading the server rsa keys: " + e.getMessage());
+            // secure wipe of RSA_PUBLIC_KEY_STRING, RSA_PRIVATE_KEY_STRING
+            Arrays.fill(ENCODED_RSA_PUBLIC_KEY_BYTES, (byte) 0);
+            Arrays.fill(ENCODED_RSA_PRIVATE_KEY_BYTES, (byte) 0);
             return;
         }
+
+        // secure wipe of RSA_PUBLIC_KEY_STRING, RSA_PRIVATE_KEY_STRING,
+        // rsaPublicKeyBytes, and rsaPrivateKeyBytes
+        Arrays.fill(ENCODED_RSA_PUBLIC_KEY_BYTES, (byte) 0);
+        Arrays.fill(ENCODED_RSA_PRIVATE_KEY_BYTES, (byte) 0);
+        Arrays.fill(decodedRSAPublicKeyBytes, (byte) 0);
+        Arrays.fill(decodedRSAPrivateKeyBytes, (byte) 0);
 
         if (Files.notExists(serverDownloadPath)) {
             try {
@@ -403,6 +418,12 @@ public class SecureFileSharingServerWithEncryption {
                         cancelKey(key);
                         return;
                     }
+
+                    // secure wipe of decrypted, ecdhBytes, ecdhDecodedBytes
+                    Arrays.fill(decrypted, (byte) 0);
+                    Arrays.fill(ecdhBytes, (byte) 0);
+                    Arrays.fill(ecdhDecodedBytes, (byte) 0);
+
                     // set up server ec keys and shared secret
                     ECPublicKey clientECPubKey = (ECPublicKey) keySession.clientPublicKey;
                     ECParameterSpec ecParams = clientECPubKey.getParams();
@@ -534,13 +555,16 @@ public class SecureFileSharingServerWithEncryption {
                 // the server already received the client's EC public Key in encrypted form
                 // so it's safe to send the server's EC public key in unencrypted form
                 // send the length of the key and then the actual key
+                byte[] serverECBase64;
                 if (keySession.serverECPublicKeyBuffer == null) {
-                    byte[] serverECBase64 = Base64.getEncoder().encode(keySession.serverECPublicKey.getEncoded());
+                    serverECBase64 = Base64.getEncoder().encode(keySession.serverECPublicKey.getEncoded());
                     int ECLength = serverECBase64.length;
                     keySession.serverECPublicKeyBuffer = ByteBuffer.allocate(4 + ECLength);
                     keySession.serverECPublicKeyBuffer.putInt(ECLength);
                     keySession.serverECPublicKeyBuffer.put(serverECBase64);
                     keySession.serverECPublicKeyBuffer.flip();
+                    // secure wipe of serverECBase64
+                    Arrays.fill(serverECBase64, (byte) 0);
                 }
                 key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
                 bytesWritten = clientChannel.write(keySession.serverECPublicKeyBuffer);
@@ -549,6 +573,9 @@ public class SecureFileSharingServerWithEncryption {
                     cancelKey(key);
                 } else if (bytesWritten > 0 && !keySession.serverECPublicKeyBuffer.hasRemaining()) {
                     keySession.serverECPublicKeyBuffer.clear();
+                    // secure wipe of keySession.serverECPublicKeyBuffer
+                    Arrays.fill(keySession.serverECPublicKeyBuffer.array(), (byte) 0);
+
                     key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
                     keySession.progressState = Progress.READING_HANDSHAKE;
                 } else if (bytesWritten == 0) {

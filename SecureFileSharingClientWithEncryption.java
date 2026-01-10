@@ -89,7 +89,8 @@ public class SecureFileSharingClientWithEncryption {
     private static RSAPrivateKey clientRSAPrivateKey;
     private static ECPublicKey clientECPublicKey;
     private static ECPrivateKey clientECPrivateKey;
-    private static final String SERVER_RSA_PUBLIC_KEY_STRING = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+TEpsZJxq1bDlcGsy4a//RRq3MMfYeE+1J6yL9LiqCf0hbdBE4y86sQjbUquoYi6VpTITiw7uzMg3wzRmkqABFtcbOtzNEeHSpqgMv88YRDlPbVutsE4JAxmm6BkA2cLqIgjM6jbZRrnR5kwaw/jWFmhOpazNRH/c6HWQ3KLFAUc/ZXBchm69gFOdtGJ939rzE9zzpLo5t+lp/kAbXbdug98Geo7Nky5A3rv3ooFAaRgwovCCKQWoKGFKndgk1TootJuLBH+DaeQ+sjDhlAByrygwuV9pPS31r1lYoWQ8Ls5RclfVIDxJLpmOxjx0x1Qn6ixnQ7P75Uy6rA9s3PiwIDAQAB";
+    private static final byte[] ENCODED_SERVER_RSA_PUBLIC_KEY_BYTES = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt+TEpsZJxq1bDlcGsy4a//RRq3MMfYeE+1J6yL9LiqCf0hbdBE4y86sQjbUquoYi6VpTITiw7uzMg3wzRmkqABFtcbOtzNEeHSpqgMv88YRDlPbVutsE4JAxmm6BkA2cLqIgjM6jbZRrnR5kwaw/jWFmhOpazNRH/c6HWQ3KLFAUc/ZXBchm69gFOdtGJ939rzE9zzpLo5t+lp/kAbXbdug98Geo7Nky5A3rv3ooFAaRgwovCCKQWoKGFKndgk1TootJuLBH+DaeQ+sjDhlAByrygwuV9pPS31r1lYoWQ8Ls5RclfVIDxJLpmOxjx0x1Qn6ixnQ7P75Uy6rA9s3PiwIDAQAB"
+            .getBytes(StandardCharsets.UTF_8);
     private static RSAPublicKey serverRSAPublicKey;
     private static ECPublicKey serverECPublicKey;
 
@@ -104,9 +105,13 @@ public class SecureFileSharingClientWithEncryption {
                                     // and not the user selecting EXIT
         }));
         try {
-            byte[] serverRSAPublicKeyBytes = Base64.getDecoder().decode(SERVER_RSA_PUBLIC_KEY_STRING);
+            byte[] decodedServerRSAPublicKeyBytes = Base64.getDecoder().decode(ENCODED_SERVER_RSA_PUBLIC_KEY_BYTES);
             serverRSAPublicKey = (RSAPublicKey) KeyFactory.getInstance("RSA")
-                    .generatePublic(new X509EncodedKeySpec(serverRSAPublicKeyBytes));
+                    .generatePublic(new X509EncodedKeySpec(decodedServerRSAPublicKeyBytes));
+            // secure wipe of ENCODED_SERVER_RSA_PUBLIC_KEY_BYTES, and
+            // decodedServerRSAPublicKeyBytes
+            Arrays.fill(ENCODED_SERVER_RSA_PUBLIC_KEY_BYTES, (byte) 0);
+            Arrays.fill(decodedServerRSAPublicKeyBytes, (byte) 0);
         } catch (Exception e) {
             System.err.println("An error occured when loading the server public key: " + e.getMessage());
             return;
@@ -266,9 +271,7 @@ public class SecureFileSharingClientWithEncryption {
 
             }
             case "UPLOAD" -> {
-                System.out.println("Argument: " + argument);
                 serverSession.fileToSend = Paths.get(argument);
-                System.out.println("Path: " + serverSession.fileToSend.toString());
                 if (!Files.exists(serverSession.fileToSend)) {
                     System.err.println("File does not exist, please check the file path");
                     resetServerSessionObj(serverSession);
@@ -407,6 +410,11 @@ public class SecureFileSharingClientWithEncryption {
                 bytesRead = socketChannel.read(serverSession.serverECPublicKeyBuffer);
                 if (bytesRead < 0) {
                     System.err.println("Server closed the connection");
+                    // secure wipe of serverSession.serverECPublicKeyLengthBuffer,
+                    // serverSession.serverECPublicKeyBuffer, serverECPublicKeyDecodedBytes
+                    Arrays.fill(serverSession.serverECPublicKeyLengthBuffer.array(), (byte) 0);
+                    Arrays.fill(serverSession.serverECPublicKeyBuffer.array(), (byte) 0);
+
                     cleanUpServerSessionObj(serverSession);
                     return;
                 }
@@ -420,6 +428,12 @@ public class SecureFileSharingClientWithEncryption {
                 serverECPublicKey = (ECPublicKey) keyFactory.generatePublic(x509EncodedKeySpec);
             } catch (Exception e) {
                 System.out.println("Failed to generate the server ecdh public key");
+                // secure wipe of serverSession.serverECPublicKeyLengthBuffer,
+                // serverSession.serverECPublicKeyBuffer, serverECPublicKeyDecodedBytes
+                Arrays.fill(serverSession.serverECPublicKeyLengthBuffer.array(), (byte) 0);
+                Arrays.fill(serverSession.serverECPublicKeyBuffer.array(), (byte) 0);
+                Arrays.fill(serverECPublicKeyDecodedBytes, (byte) 0);
+
                 cleanUpServerSessionObj(serverSession);
                 return;
             }
@@ -431,6 +445,12 @@ public class SecureFileSharingClientWithEncryption {
                 cleanUpServerSessionObj(serverSession);
                 return;
             }
+
+            // secure wipe of serverSession.serverECPublicKeyLengthBuffer,
+            // serverSession.serverECPublicKeyBuffer, serverECPublicKeyDecodedBytes
+            Arrays.fill(serverSession.serverECPublicKeyLengthBuffer.array(), (byte) 0);
+            Arrays.fill(serverSession.serverECPublicKeyBuffer.array(), (byte) 0);
+            Arrays.fill(serverECPublicKeyDecodedBytes, (byte) 0);
 
             return; // Returned because this is called from writeHandshake()
         }
@@ -465,6 +485,8 @@ public class SecureFileSharingClientWithEncryption {
         serverSession.handShakeReceiveBuffer.get(serverSession.serverIV);
 
         System.out.println("Handshake completed successfully...");
+
+        resetServerSessionObj(serverSession);
 
     }
 
@@ -516,12 +538,19 @@ public class SecureFileSharingClientWithEncryption {
         bufferB.flip();
 
         try {
-            // this contains bufferA in encrypted form
+            // encrypt bufferA and bufferB
             serverSession.encHandShakeReceiveLengthBuffer = ByteBuffer.wrap(serverSession.rsaEncrypt(bufferA.array()));
+
+            // send encrypted bufferA
             while (serverSession.encHandShakeReceiveLengthBuffer.hasRemaining()) {
                 bytesWritten = socketChannel.write(serverSession.encHandShakeReceiveLengthBuffer);
                 if (bytesWritten < 0) {
                     System.err.println("Server closed the connection");
+                    Arrays.fill(passwordChars, ' ');
+                    Arrays.fill(passwordHandShakeChars, ' ');
+                    Arrays.fill(passwordHandShakeBytes, (byte) 0);
+                    Arrays.fill(bufferB.array(), (byte) 0);
+                    Arrays.fill(bufferA.array(), (byte) 0);
                     cleanUpServerSessionObj(serverSession);
                     return;
                 }
@@ -529,27 +558,44 @@ public class SecureFileSharingClientWithEncryption {
             if (serverSession.secretKey == null) {
                 readHandShake(socketChannel, serverSession);
             }
+
             serverSession.encHandShakeSendBuffer = ByteBuffer.wrap(serverSession.encrypt(bufferB.array()));
+
         } catch (Exception e) {
             System.err.println("Failed to encrypt handshake: " + e.getMessage());
+            Arrays.fill(passwordChars, ' ');
+            Arrays.fill(passwordHandShakeChars, ' ');
+            Arrays.fill(passwordHandShakeBytes, (byte) 0);
+            Arrays.fill(bufferB.array(), (byte) 0);
+            Arrays.fill(bufferA.array(), (byte) 0);
             cleanUpServerSessionObj(serverSession);
             return;
         }
-        // secure wipe here of passwordchars, passwordHandShakeChars,
-        // passwordHandShakeBytes and bufferB array
-        Arrays.fill(passwordChars, ' ');
-        Arrays.fill(passwordHandShakeChars, ' ');
-        Arrays.fill(passwordHandShakeBytes, (byte) 0);
-        Arrays.fill(bufferB.array(), (byte) 0);
 
+        // send encrypted bufferB
         while (serverSession.encHandShakeSendBuffer.hasRemaining()) {
             bytesWritten = socketChannel.write(serverSession.encHandShakeSendBuffer);
             if (bytesWritten < 0) {
                 System.err.println("Server closed the connection");
+                // secure wipe of passwordchars, passwordHandShakeChars,
+                // passwordHandShakeBytes, bufferA array and bufferB array
+                Arrays.fill(passwordChars, ' ');
+                Arrays.fill(passwordHandShakeChars, ' ');
+                Arrays.fill(passwordHandShakeBytes, (byte) 0);
+                Arrays.fill(bufferB.array(), (byte) 0);
+                Arrays.fill(bufferA.array(), (byte) 0);
                 cleanUpServerSessionObj(serverSession);
                 return;
             }
         }
+
+        // secure wipe of passwordchars, passwordHandShakeChars,
+        // passwordHandShakeBytes, bufferA array and bufferB array
+        Arrays.fill(passwordChars, ' ');
+        Arrays.fill(passwordHandShakeChars, ' ');
+        Arrays.fill(passwordHandShakeBytes, (byte) 0);
+        Arrays.fill(bufferB.array(), (byte) 0);
+        Arrays.fill(bufferA.array(), (byte) 0);
 
     }
 
