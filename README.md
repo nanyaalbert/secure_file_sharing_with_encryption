@@ -56,21 +56,74 @@ The server manages client connections through a Finite State Machine (FSM). Each
 
 - **ANSI Progress Bars:** Uses ANSI Escape Codes and Carriage Returns (\r) for smooth, flicker-free progress bars.
 
-## Usage
-1. **Generate RSA Identity**  
-Run the generator to create the Base64-encoded RSA public and private keys for your configuration.
+## Setup and Configuration
+This project uses **Public Key Pinning** for maximum security. Before compiling, you must generate your own RSA identity keys.
+### Generate RSA Identity  
+Run the `RSAKeyGenerator` utility to generate a new 2048-bit RSA key pair:
 
-    ```java RSAKeyGenerator```
+```bash
+java RSAKeyGenerator
+```
 
-1. **Start the Server**  
-The server binds to port 1234 and waits for incoming secure handshakes.
+The utility will output two Base64-encoded strings: your Public Key and your Private Key.
 
-    ```java SecureFileSharingServerWithEncryption```
+### Configure the Server  
+Open SecureFileSharingServerWithEncryption.java and locate the hardcoded key variables at the top of the class. Replace them with your generated strings:
 
-1. **Run the Client**  
-Connect by entering the Server IP and the agreed-upon session password.
+```java
+private static final byte[] ENCODED_RSA_PUBLIC_KEY_BYTES = "YOUR_GENERATED_PUBLIC_KEY".getBytes(StandardCharsets.UTF_8);
 
-    ```java SecureFileSharingClientWithEncryption```
+private static final byte[] ENCODED_RSA_PRIVATE_KEY_BYTES = "YOUR_GENERATED_PRIVATE_KEY".getBytes(StandardCharsets.UTF_8);
+```
+
+### Configure the Client  
+Open SecureFileSharingClientWithEncryption.java. To ensure the client only connects to your server, paste the Server's Public Key here:
+
+```java
+private static final byte[] ENCODED_SERVER_RSA_PUBLIC_KEY_BYTES = "YOUR_GENERATED_PUBLIC_KEY".getBytes(StandardCharsets.UTF_8);
+```
+
+### Compilation and Packaging  
+Once the keys are swapped, compile the source:
+
+```bash
+javac *.java
+```
+
+#### Package the Server
+Package only Server-related files
+
+```bash
+jar cvfm SecureServer.jar server-manifest.txt SecureFileSharingServerWithEncryption*.class
+```
+
+#### Package the Client
+Package only Server-related files
+
+```bash
+jar cvfm SecureClient.jar server-manifest.txt SecureFileSharingClientWithEncryption*.class
+```
+
+#### Deployment
+| If running the... | Transfer this file | Run Command |
+| :--- | :--- | :--- |
+| SERVER | SecureServer.jar | ```java -jar SecureServer.jar``` |
+| CLIENT | SecureClient.jar | ```java -jar SecureClient.jar``` |
+
+##### Required Inputs for Client:
+
+- **Server IP:** Use the Local IP for LAN (e.g., 192.168.x.x) or Public IP for WAN.
+- **Password:** Enter the server password (input is masked for security).
+
+## Networking Notes
+### Local Area Network (LAN)
+The system is fully functional on local networks without internet. Ensure both devices are on the same router/subnet and use the server's local IP.
+
+### Over the Internet (WAN)
+You must Port Forward TCP port 1234 in your router settings to the Server's local IP to allow external connections.
+
+### Over the Internet (WAN)
+NEVER give a Client user the SecureServer.jar or the server .java files
 
 ## Commands
 | Command | Description |
