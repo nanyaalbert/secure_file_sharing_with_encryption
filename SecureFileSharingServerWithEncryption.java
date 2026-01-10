@@ -1,9 +1,11 @@
+import java.io.Console;
 import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.channels.AsynchronousFileChannel;
 import java.nio.channels.CompletionHandler;
 import java.nio.channels.FileChannel;
@@ -56,13 +58,20 @@ public class SecureFileSharingServerWithEncryption {
     private static final int FILE_LIST_REQUEST = 4;
     private static final int FILE_LIST = 5;
     private static final int INFORMATION = 6;
-    private static String HANDSHAKE_STRING = "SecureFileSharingHandShake";
     private static long TEMPFILENUMBER = 0;
     private static Path serverDownloadPath = Paths.get(System.getProperty("user.home"),
             "SecureFileSharingServerWithEncryption");
     private static Path serverTempPath = Paths.get(System.getProperty("java.io.tmpdir"),
             "SecureFileSharingServerWithEncryptionTemp");
     private static String ServerIPAdress;
+
+    private static Scanner userInput = new Scanner(System.in);
+
+    private static char[] passwordChars;
+    private static char[] passwordHandShakeChars;
+    private static byte[] passwordHandShakeBytes;
+
+    private static byte[] EXPECTED_HANDSHAKE_HASH;
 
     private enum Progress {
         JUST_CONNECTED,
@@ -100,7 +109,26 @@ public class SecureFileSharingServerWithEncryption {
     private static RSAPublicKey serverRSAPublicKey;
     private static RSAPrivateKey serverRSAPrivateKey;
 
+    private static ServerSocketChannel serverChannel;
+    private static Selector selector;
+
     public static void main(String[] args) {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("\n[EXIT] Shutting down server...");
+            serverShutdown();
+        }));
+        try {
+            serverChannel = ServerSocketChannel.open();
+        } catch (IOException e) {
+            System.err.println("An error occured while trying to open server channel " + e.getMessage());
+            return;
+        }
+        try {
+            selector = Selector.open();
+        } catch (IOException e) {
+            System.err.println("An error occured while trying to open selector " + e.getMessage());
+            return;
+        }
         try {
             byte[] rsaPublicKeyBytes = Base64.getDecoder().decode(RSA_PUBLIC_KEY_STRING);
             byte[] rsaPrivateKeyBytes = Base64.getDecoder().decode(RSA_PRIVATE_KEY_STRING);
@@ -136,15 +164,40 @@ public class SecureFileSharingServerWithEncryption {
     private static void server() {
         System.out.println("Welcome to the server");
 
-        try (ServerSocketChannel serverChannel = ServerSocketChannel.open(); Selector selector = Selector.open()) {
+        try {
             serverChannel.configureBlocking(false);
             InetSocketAddress serverAddress = new InetSocketAddress("0.0.0.0", PORT);
             serverChannel.bind(serverAddress);
             printConnectionGuide();
-            Scanner userInput = new Scanner(System.in);
             System.out.println("Please setup a password for the server.");
-            System.out.println("Enter password: ");
-            HANDSHAKE_STRING += userInput.nextLine();
+            System.out.println("Enter server password: ");
+            passwordChars = userInput.nextLine().toCharArray();
+
+            // \033[1A -> Move cursor UP one line
+            // \r -> Move cursor to START of that line
+            System.out.print("\033[1A\r");
+            for (int i = 0; i < passwordChars.length; i++) {
+                System.out.print("*");
+            }
+            System.out.println();
+
+            // trying to avoid creating new string into the string pool
+            passwordHandShakeChars = new char["SecureFileSharingHandShake".length() + passwordChars.length];
+            System.arraycopy("SecureFileSharingHandShake".toCharArray(), 0, passwordHandShakeChars, 0,
+                    "SecureFileSharingHandShake".length());
+            System.arraycopy(passwordChars, 0, passwordHandShakeChars, "SecureFileSharingHandShake".length(),
+                    passwordChars.length);
+            passwordHandShakeBytes = StandardCharsets.UTF_8.encode(CharBuffer.wrap(passwordHandShakeChars)).array();
+
+            MessageDigest passwordHandShakeDigest = MessageDigest.getInstance("SHA-256");
+            EXPECTED_HANDSHAKE_HASH = passwordHandShakeDigest.digest(passwordHandShakeBytes);
+
+            // secure wipe of passwordchars, passwordHandShakeChars,
+            // passwordHandShakeBytes and bufferB array
+            Arrays.fill(passwordChars, ' ');
+            Arrays.fill(passwordHandShakeChars, ' ');
+            Arrays.fill(passwordHandShakeBytes, (byte) 0);
+
             System.out.println("\nWaiting for connections..."); // remove this and also as an attachment
             serverChannel.register(selector, SelectionKey.OP_ACCEPT);
 
@@ -175,113 +228,126 @@ public class SecureFileSharingServerWithEncryption {
                     if (key.isReadable()) {
                         SocketChannel readyClient = (SocketChannel) key.channel();
                         CurrentSession keySession = (CurrentSession) key.attachment();
+                        try {
 
-                        switch (keySession.progressState) {
-                            case Progress.JUST_CONNECTED, Progress.READING_HANDSHAKE -> {
-                                // Kills any connection that is not authenticated in 12 seconds
-                                long currentTime = System.currentTimeMillis();
-                                if (currentTime - keySession.connectTime > 12000) {
-                                    System.err.println("Client " + readyClient.getRemoteAddress()
-                                            + " took too long to authenticate. disconnecting...");
-                                    cancelKey(key);
-                                    continue;
-                                }
-                                readHandShake(key);
-                            }
-                            case Progress.WRITING_HANDSHAKE, Progress.WRITING_HANDSHAKE_SERVER_EC_PUBLIC_KEY -> {
-                                writeHandShake(key);
-                            }
-                            case Progress.VALID_HANDSHAKE -> {
-                                if (keySession.command == NO_COMMAND && keySession.encCommandReceiveBuffer
-                                        .position() != keySession.encCommandReceiveBuffer.capacity()) {
-                                    int bytesRead;
-                                    bytesRead = readyClient.read(keySession.encCommandReceiveBuffer);
-                                    if (bytesRead < 0) {
+                            switch (keySession.progressState) {
+                                case Progress.JUST_CONNECTED, Progress.READING_HANDSHAKE -> {
+                                    // Kills any connection that is not authenticated in 12 seconds
+                                    long currentTime = System.currentTimeMillis();
+                                    if (currentTime - keySession.connectTime > 12000) {
                                         System.err.println("Client " + readyClient.getRemoteAddress()
+                                                + " took too long to authenticate. disconnecting...");
+                                        cancelKey(key);
+                                        continue;
+                                    }
+                                    readHandShake(key);
+                                }
+                                case Progress.WRITING_HANDSHAKE, Progress.WRITING_HANDSHAKE_SERVER_EC_PUBLIC_KEY -> {
+                                    writeHandShake(key);
+                                }
+                                case Progress.VALID_HANDSHAKE -> {
+                                    if (keySession.command == NO_COMMAND && keySession.encCommandReceiveBuffer
+                                            .position() != keySession.encCommandReceiveBuffer.capacity()) {
+                                        int bytesRead;
+                                        bytesRead = readyClient.read(keySession.encCommandReceiveBuffer);
+                                        if (bytesRead < 0) {
+                                            System.err.println("Client " + readyClient.getRemoteAddress()
+                                                    + " disconnected");
+                                            cancelKey(key);
+                                            continue;
+                                        }
+                                        if (keySession.encCommandReceiveBuffer
+                                                .position() == keySession.encCommandReceiveBuffer.capacity()) {
+                                            byte[] commandBytes = new byte[keySession.commandReceiveBuffer.capacity()];
+                                            commandBytes = keySession
+                                                    .rsaDecrypt(keySession.encCommandReceiveBuffer.array());
+                                            keySession.commandReceiveBuffer.clear().put(commandBytes).flip();
+                                            keySession.command = keySession.commandReceiveBuffer.getInt();
+                                        }
+                                    }
+                                    if (keySession.command == EXIT) {
+                                        System.out.println("Client " + readyClient.getRemoteAddress()
                                                 + " disconnected");
                                         cancelKey(key);
                                         continue;
                                     }
-                                    if (keySession.encCommandReceiveBuffer
-                                            .position() == keySession.encCommandReceiveBuffer.capacity()) {
-                                        byte[] commandBytes = new byte[keySession.commandReceiveBuffer.capacity()];
-                                        commandBytes = keySession
-                                                .rsaDecrypt(keySession.encCommandReceiveBuffer.array());
-                                        keySession.commandReceiveBuffer.clear().put(commandBytes).flip();
-                                        keySession.command = keySession.commandReceiveBuffer.getInt();
+                                    if (keySession.command == NO_COMMAND) {
+                                        // do nothing
+                                        continue;
+                                    }
+                                    if (keySession.command == FILE_SEND_REQUEST) {
+                                        serverSendFile(key);
+                                    }
+                                    if (keySession.command == FILE_UPLOAD_REQUEST) {
+                                        serverReceiveFile(key);
+                                    }
+                                    if (keySession.command == FILE_LIST_REQUEST) {
+                                        serverSendFilesList(key);
+                                    }
+                                    if (keySession.command != NO_COMMAND && keySession.command != FILE_SEND_REQUEST
+                                            && keySession.command != FILE_UPLOAD_REQUEST
+                                            && keySession.command != FILE_LIST_REQUEST) {
+                                        // Invalid command, cancel this key and move to the next
+                                        System.err.println("Invalid command; client " + readyClient.getRemoteAddress()
+                                                + " may have closed the connection...");
+                                        cancelKey(key);
+                                        continue;
                                     }
                                 }
-                                if (keySession.command == EXIT) {
-                                    System.out.println("Client " + readyClient.getRemoteAddress()
-                                            + " disconnected");
-                                    cancelKey(key);
-                                    continue;
-                                }
-                                if (keySession.command == NO_COMMAND) {
-                                    // do nothing
-                                    continue;
-                                }
-                                if (keySession.command == FILE_SEND_REQUEST) {
+                                case Progress.WRITING_FILEDETAILS, Progress.WRITING_FILEDATA -> {
                                     serverSendFile(key);
                                 }
-                                if (keySession.command == FILE_UPLOAD_REQUEST) {
+                                case Progress.READING_FILEDETAILS, Progress.READING_FILEDATA -> {
                                     serverReceiveFile(key);
                                 }
-                                if (keySession.command == FILE_LIST_REQUEST) {
+                                case Progress.FILE_LIST_SAVED_TO_DISK, Progress.WRITING_FILELIST -> {
                                     serverSendFilesList(key);
                                 }
-                                if (keySession.command != NO_COMMAND && keySession.command != FILE_SEND_REQUEST
-                                        && keySession.command != FILE_UPLOAD_REQUEST
-                                        && keySession.command != FILE_LIST_REQUEST) {
-                                    // Invalid command, cancel this key and move to the next
-                                    System.err.println("Invalid command; client " + readyClient.getRemoteAddress()
-                                            + " may have closed the connection...");
-                                    cancelKey(key);
-                                    continue;
-                                }
-                            }
-                            case Progress.WRITING_FILEDETAILS, Progress.WRITING_FILEDATA -> {
-                                serverSendFile(key);
-                            }
-                            case Progress.READING_FILEDETAILS, Progress.READING_FILEDATA -> {
-                                serverReceiveFile(key);
-                            }
-                            case Progress.FILE_LIST_SAVED_TO_DISK, Progress.WRITING_FILELIST -> {
-                                serverSendFilesList(key);
-                            }
 
+                            }
+                        } catch (Exception e) {
+                            System.out.println("An error occured with client " + readyClient.getRemoteAddress());
+                            cancelKey(key);
+                            continue; // go to the next key
                         }
 
                     }
                     if (key.isWritable()) {
                         SocketChannel readyClient = (SocketChannel) key.channel();
                         CurrentSession keySession = (CurrentSession) key.attachment();
-                        switch (keySession.progressState) {
-                            case Progress.WRITING_HANDSHAKE, Progress.WRITING_HANDSHAKE_SERVER_EC_PUBLIC_KEY -> {
-                                writeHandShake(key);
-                            }
-                            case Progress.FILE_LIST_SAVED_TO_DISK, Progress.WRITING_FILELIST -> {
-                                serverSendFilesList(key);
-                            }
-                            case Progress.WRITING_FILEDETAILS, Progress.WRITING_FILEDATA -> {
-                                serverSendFile(key);
-                            }
-                            case Progress.WRITING_INFORMATION, Progress.WRITING_INFORMATION_DETAILS -> {
-                                if (keySession.command == FILE_SEND_REQUEST) {
-                                    serverSendFile(key);
+                        try {
+
+                            switch (keySession.progressState) {
+                                case Progress.WRITING_HANDSHAKE, Progress.WRITING_HANDSHAKE_SERVER_EC_PUBLIC_KEY -> {
+                                    writeHandShake(key);
                                 }
-                            }
-                            case Progress.VALID_HANDSHAKE -> {
-                                if (keySession.command == FILE_SEND_REQUEST) {
-                                    serverSendFile(key);
-                                }
-                                if (keySession.command == FILE_UPLOAD_REQUEST) {
-                                    serverReceiveFile(key);
-                                }
-                                if (keySession.command == FILE_LIST_REQUEST) {
+                                case Progress.FILE_LIST_SAVED_TO_DISK, Progress.WRITING_FILELIST -> {
                                     serverSendFilesList(key);
                                 }
+                                case Progress.WRITING_FILEDETAILS, Progress.WRITING_FILEDATA -> {
+                                    serverSendFile(key);
+                                }
+                                case Progress.WRITING_INFORMATION, Progress.WRITING_INFORMATION_DETAILS -> {
+                                    if (keySession.command == FILE_SEND_REQUEST) {
+                                        serverSendFile(key);
+                                    }
+                                }
+                                case Progress.VALID_HANDSHAKE -> {
+                                    if (keySession.command == FILE_SEND_REQUEST) {
+                                        serverSendFile(key);
+                                    }
+                                    if (keySession.command == FILE_UPLOAD_REQUEST) {
+                                        serverReceiveFile(key);
+                                    }
+                                    if (keySession.command == FILE_LIST_REQUEST) {
+                                        serverSendFilesList(key);
+                                    }
+                                }
                             }
+                        } catch (Exception e) {
+                            System.out.println("An error occured with client " + readyClient.getRemoteAddress());
+                            cancelKey(key);
+                            continue; // go to the next key
                         }
                     }
                 }
@@ -386,9 +452,6 @@ public class SecureFileSharingServerWithEncryption {
                         System.out.println("Handshake read from client: " + clientChannel.getRemoteAddress());
                         try {
                             keySession.encHandShakeReceiveBuffer.flip();
-                            // byte[] exactBytes = new
-                            // byte[keySession.encHandShakeReceiveBuffer.remaining()];
-                            // keySession.encHandShakeReceiveBuffer.get(exactBytes);
                             keySession.decryptedHandShake = ByteBuffer
                                     .wrap(keySession.decrypt(keySession.encHandShakeReceiveBuffer.array()));
                         } catch (Exception e) {
@@ -403,12 +466,13 @@ public class SecureFileSharingServerWithEncryption {
                         byte[] clientRSAPublicKeyLengthArr = new byte[4];
                         keySession.decryptedHandShake.get(clientRSAPublicKeyLengthArr);
                         int clientRSAPublicKeyLength = ByteBuffer.wrap(clientRSAPublicKeyLengthArr).getInt();
-                        byte[] handshakeStringArray = new byte[handShakeStringLength];
-                        keySession.decryptedHandShake.get(handshakeStringArray);
-                        String handShakeString = new String(handshakeStringArray, StandardCharsets.UTF_8);
-                        if (!handShakeString.equals(HANDSHAKE_STRING)) {
+                        byte[] handshakeCharArray = new byte[handShakeStringLength];
+                        keySession.decryptedHandShake.get(handshakeCharArray);
+                        byte[] RECEIVED_HANDSHAKE_HASH = MessageDigest.getInstance("SHA-256")
+                                .digest(handshakeCharArray);
+                        if (!MessageDigest.isEqual(RECEIVED_HANDSHAKE_HASH, EXPECTED_HANDSHAKE_HASH)) {
                             System.err.println("Client " + clientChannel.getRemoteAddress()
-                                    + " handshake string does not match. disconnecting...");
+                                    + " handshake hash does not match. disconnecting...");
                             cancelKey(key);
                             return;
                         }
@@ -706,8 +770,12 @@ public class SecureFileSharingServerWithEncryption {
                 }
                 keySession.fileToSend = serverDownloadPath.resolve(keySession.fileName);
                 if (Files.notExists(keySession.fileToSend)) {
+                    System.out.println("Client " + clientChannel.getRemoteAddress() + " requested file "
+                            + keySession.fileName + " that does not exist");
                     keySession.progressState = Progress.WRITING_INFORMATION_DETAILS;
                 } else if (Files.exists(keySession.fileToSend) && keySession.unEncFileDetails256 == null) {
+                    System.out.println("Client " + clientChannel.getRemoteAddress() + " requested file "
+                            + keySession.fileName + " that exists");
                     // command at the first 4 bytes
                     // file size at the next 8 bytes
                     // file name length at the next 4 bytes
@@ -913,7 +981,7 @@ public class SecureFileSharingServerWithEncryption {
                     }
                 }
                 if (keySession.chunkStatus == ChunkProgress.ALL_CHUNK_SENT) {
-                    System.out.println("Sent file " + keySession.fileName + " to client "
+                    System.out.println("Sent file \"" + keySession.fileName + "\" to client "
                             + clientChannel.getRemoteAddress());
                     key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
                     resetCurrentSessionObj(keySession);
@@ -926,7 +994,6 @@ public class SecureFileSharingServerWithEncryption {
     }
 
     private static void serverReceiveFile(SelectionKey key) throws Exception {
-        System.out.println("DEBUG: POINT 1");
         int bytesRead;
         long bytesWrittenToFile;
         SocketChannel clientChannel = (SocketChannel) key.channel();
@@ -936,12 +1003,9 @@ public class SecureFileSharingServerWithEncryption {
             keySession.progressState = Progress.READING_FILEDETAILS;
         }
 
-        System.out.println("DEBUG: POINT 2");
         if (keySession.progressState == Progress.READING_FILEDETAILS) {
-            System.out.println("DEBUG: POINT 3");
             if (keySession.unEncFileDetails256 == null) {
                 bytesRead = clientChannel.read(keySession.encFileDetails256);
-                System.out.println("DEBUG: POINT 4");
                 if (bytesRead < 0) {
                     System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                     cancelKey(key);
@@ -952,13 +1016,11 @@ public class SecureFileSharingServerWithEncryption {
                 } else if (bytesRead > 0
                         && keySession.encFileDetails256.position() == keySession.encFileDetails256.capacity()) {
                     try {
-                        System.out.println("DEBUG: POINT 5");
                         keySession.unEncFileDetails256 = ByteBuffer
                                 .wrap(keySession.rsaDecrypt(keySession.encFileDetails256.array()));
                         keySession.fileSize = keySession.unEncFileDetails256.getLong();
                         keySession.fileNameLength = keySession.unEncFileDetails256.getInt();
                         keySession.encFileNameBuffer = ByteBuffer.allocate(keySession.fileNameLength);
-                        System.out.println("DEBUG: POINT 6");
                     } catch (Exception e) {
                         System.err.println("An error occured while decrypting file details for client "
                                 + clientChannel.getRemoteAddress());
@@ -971,9 +1033,7 @@ public class SecureFileSharingServerWithEncryption {
             }
 
             if (keySession.fileNameLength > 0 && keySession.fileName.isBlank()) {
-                System.out.println("DEBUG: POINT 7");
                 bytesRead = clientChannel.read(keySession.encFileNameBuffer);
-                System.out.println("DEBUG: POINT 8");
                 if (bytesRead < 0) {
                     System.err.println("Client " + clientChannel.getRemoteAddress() + " closed the connection");
                     cancelKey(key);
@@ -982,11 +1042,11 @@ public class SecureFileSharingServerWithEncryption {
                     return;
                 } else if (bytesRead > 0 && keySession.encFileNameBuffer.position() == keySession.fileNameLength) {
                     try {
-                        System.out.println("DEBUG: POINT 9");
                         keySession.fileNameBuffer = ByteBuffer
                                 .wrap(keySession.decrypt(keySession.encFileNameBuffer.array()));
                         keySession.fileName = new String(keySession.fileNameBuffer.array(), StandardCharsets.UTF_8);
-                        System.out.println("DEBUG: POINT 10");
+                        System.out.println("Client " + clientChannel.getRemoteAddress() + " wants to upload file: "
+                                + keySession.fileName);
                     } catch (Exception e) {
                         System.err.println("An error occured while decrypting the file name for client "
                                 + clientChannel.getRemoteAddress());
@@ -999,17 +1059,13 @@ public class SecureFileSharingServerWithEncryption {
             }
 
             if (!keySession.fileName.isBlank() && keySession.fileSize > 0) {
-                System.out.println("DEBUG: POINT 11");
                 keySession.filePath = serverDownloadPath.resolve(keySession.fileName);
                 int lastDotIndex = keySession.fileName.lastIndexOf(".");
                 keySession.fileExtension = keySession.fileName.substring(lastDotIndex);
                 keySession.fileNameWithoutExtension = keySession.fileName.substring(0, lastDotIndex);
-                System.out.println("DEBUG: POINT 12");
                 if (keySession.progressState != Progress.READING_FILEDATA) {
-                    System.out.println("DEBUG: POINT 13");
                     int counter = 0;
                     while (true) {
-                        System.out.println("DEBUG: POINT 13A");
                         if (Files.exists(keySession.filePath)) {
                             counter++;
 
@@ -1030,12 +1086,9 @@ public class SecureFileSharingServerWithEncryption {
                                         lastDotIndexNew);
                             }
                         } else if (!Files.exists(keySession.filePath)) {
-                            System.out.println("DEBUG: POINT 13B");
                             try {
-                                System.out.println("DEBUG: POINT 13B-1");
                                 Files.createFile(keySession.filePath);
                                 keySession.progressState = Progress.READING_FILEDATA;
-                                System.out.println("DEBUG: POINT 13B-2");
                             } catch (Exception e) {
                                 System.err.println("Failed to create file: " + keySession.filePath.toAbsolutePath());
                             }
@@ -1048,12 +1101,9 @@ public class SecureFileSharingServerWithEncryption {
         }
 
         if (keySession.progressState == Progress.READING_FILEDATA) {
-            System.out.println("DEBUG: POINT 14");
             if (keySession.chunkStatus == ChunkProgress.DEFAULT
                     || keySession.chunkStatus == ChunkProgress.CHUNK_WRITTEN_TO_FILE) {
-                System.out.println("DEBUG: POINT 15");
                 bytesRead = clientChannel.read(keySession.encChunkLengthBuffer);
-                System.out.println("DEBUG: POINT 16");
                 if (bytesRead < 0) {
                     cancelKey(key);
                     return;
@@ -1063,13 +1113,11 @@ public class SecureFileSharingServerWithEncryption {
                 } else if (bytesRead > 0 && keySession.encChunkLengthBuffer
                         .position() == keySession.encChunkLengthBuffer.capacity()) {
                     try {
-                        System.out.println("DEBUG: POINT 17");
                         byte[] decChunkLengthBytes = keySession.rsaDecrypt(keySession.encChunkLengthBuffer.array());
                         keySession.chunkLengthBuffer.clear().put(decChunkLengthBytes).flip();
                         keySession.lengthOfEncryptedChunk = keySession.chunkLengthBuffer.getInt();
                         keySession.chunkStatus = ChunkProgress.RECEIVING_CHUNK;
                         keySession.encChunkLengthBuffer.clear();
-                        System.out.println("DEBUG: POINT 18");
                     } catch (Exception e) {
                         System.err.println("An error occured while decrypting the chunk length for client "
                                 + clientChannel.getRemoteAddress());
@@ -1079,9 +1127,7 @@ public class SecureFileSharingServerWithEncryption {
                 }
             }
             if (keySession.chunkStatus == ChunkProgress.RECEIVING_CHUNK) {
-                System.out.println("DEBUG: POINT 20");
                 bytesRead = clientChannel.read(keySession.encryptedFileChunkBuffer);
-                System.out.println("DEBUG: POINT 21");
                 if (bytesRead < 0) {
                     cancelKey(key);
                     return;
@@ -1093,7 +1139,6 @@ public class SecureFileSharingServerWithEncryption {
                 } else if (bytesRead > 0
                         && keySession.encryptedFileChunkBuffer.position() == keySession.lengthOfEncryptedChunk) {
                     try {
-                        System.out.println("DEBUG: POINT 22");
                         keySession.encryptedFileChunkBuffer.flip();
                         byte[] validEncryptedBytes = new byte[keySession.encryptedFileChunkBuffer.remaining()];
                         keySession.encryptedFileChunkBuffer.get(validEncryptedBytes);
@@ -1101,7 +1146,6 @@ public class SecureFileSharingServerWithEncryption {
                         keySession.directFileChunkBuffer.clear().put(decFileChunkBytes).flip();
                         keySession.chunkStatus = ChunkProgress.WRITING_CHUNK_TO_FILE;
                         keySession.encryptedFileChunkBuffer.clear();
-                        System.out.println("DEBUG: POINT 23");
                     } catch (Exception e) {
                         System.err.println("An error occured while decrypting the file chunk for client "
                                 + clientChannel.getRemoteAddress());
@@ -1111,7 +1155,6 @@ public class SecureFileSharingServerWithEncryption {
                 }
             }
             if (keySession.chunkStatus == ChunkProgress.WRITING_CHUNK_TO_FILE) {
-                System.out.println("DEBUG: POINT 24");
                 if (keySession.asyncFileChannel == null || !keySession.asyncFileChannel.isOpen()) {
                     try {
                         keySession.asyncFileChannel = AsynchronousFileChannel.open(keySession.filePath,
@@ -1125,7 +1168,6 @@ public class SecureFileSharingServerWithEncryption {
                 }
                 int prevOps = key.interestOps();
                 key.interestOps(0);
-                System.out.println("DEBUG: POINT 25");
                 keySession.asyncFileChannel.write(keySession.directFileChunkBuffer, keySession.fileChannelPosition, key,
                         new CompletionHandler<Integer, SelectionKey>() {
                             @Override
@@ -1136,7 +1178,6 @@ public class SecureFileSharingServerWithEncryption {
                                 CurrentSession keySession = (CurrentSession) attachment.attachment();
                                 SocketChannel clientChannel = (SocketChannel) attachment.channel();
                                 try {
-                                    System.out.println("DEBUG: POINT 25A");
                                     if (keySession.asyncFileChannel.size() == keySession.fileSize) {
                                         keySession.chunkStatus = ChunkProgress.ALL_CHUNK_WRITTEN_TO_FILE;
                                         keySession.asyncFileChannel.close();
@@ -1144,11 +1185,9 @@ public class SecureFileSharingServerWithEncryption {
                                                 "Received file from client " + clientChannel.getRemoteAddress() + ": "
                                                         + keySession.fileName);
                                         resetCurrentSessionObj(keySession);
-                                        System.out.println("DEBUG: POINT 25A-1");
                                         return;
                                     } else if (keySession.asyncFileChannel.size() < keySession.fileSize) {
                                         keySession.chunkStatus = ChunkProgress.CHUNK_WRITTEN_TO_FILE;
-                                        System.out.println("DEBUG: POINT 25A-2");
                                         return;
                                     }
                                 } catch (Exception e) {
@@ -1178,12 +1217,29 @@ public class SecureFileSharingServerWithEncryption {
     private static void cancelKey(SelectionKey key) {
         try {
             CurrentSession keySession = (CurrentSession) key.attachment();
-            cleanUpCurrentSessionObj(keySession);
+            if (keySession != null) {
+                cleanUpCurrentSessionObj(keySession);
+            }
             key.attach(null);
             key.channel().close();
             key.cancel();
         } catch (Exception e) {
             System.err.println("An error occured while trying to cancel key " + e.getMessage());
+        }
+    }
+
+    private static void serverShutdown() {
+        try {
+            if (selector != null && selector.isOpen()) {
+                for (SelectionKey key : selector.keys()) {
+                    cancelKey(key);
+                }
+                selector.close();
+            }
+            if (serverChannel != null && serverChannel.isOpen())
+                serverChannel.close();
+        } catch (Exception e) {
+            // ignore shutdown errors
         }
     }
 
