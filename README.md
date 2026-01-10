@@ -101,14 +101,14 @@ jar cvfm SecureServer.jar server-manifest.txt SecureFileSharingServerWithEncrypt
 Package only Server-related files
 
 ```bash
-jar cvfm SecureClient.jar server-manifest.txt SecureFileSharingClientWithEncryption*.class
+jar cvfm SecureClient.jar client-manifest.txt SecureFileSharingClientWithEncryption*.class
 ```
 
 #### Deployment
 | If running the... | Transfer this file | Run Command |
 | :--- | :--- | :--- |
-| SERVER | SecureServer.jar | ```java -jar SecureServer.jar``` |
-| CLIENT | SecureClient.jar | ```java -jar SecureClient.jar``` |
+| **SERVER** | SecureServer.jar | ```java -jar SecureServer.jar``` |
+| **CLIENT** | SecureClient.jar | ```java -jar SecureClient.jar``` |
 
 ##### Required Inputs for Client:
 
@@ -122,7 +122,7 @@ The system is fully functional on local networks without internet. Ensure both d
 ### Over the Internet (WAN)
 You must Port Forward TCP port 1234 in your router settings to the Server's local IP to allow external connections.
 
-### Over the Internet (WAN)
+### Security Warning:
 NEVER give a Client user the SecureServer.jar or the server .java files
 
 ## Commands
