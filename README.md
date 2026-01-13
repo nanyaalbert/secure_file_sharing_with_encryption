@@ -20,7 +20,7 @@ The protocol uses a dual-encryption strategy to manage control signals and data 
 
     - **AES-256-GCM Data Streaming:** Once a command is interpreted via RSA, the bulk response or file data is processed using AES-256-GCM (Galois/Counter Mode) for high-speed, authenticated streaming.
 
-    - **AAD (Additional Authenticated Data):** The implementation explicitly calls updateAAD(additionalDataBytes) before finalizing the cipher. This binds session-specific metadata to the encryption process, ensuring that ciphertext cannot be intercepted and injected into a different context or session without triggering an authentication failure.
+    - **AAD (Additional Authenticated Data):** The implementation explicitly calls updateAAD(additionalDataBytes) before finalizing the cipher. This binds specific metadata to the encryption process, ensuring that ciphertext cannot be intercepted and injected without triggering an authentication failure.
 
     - **Stateful Replay Protection:** A custom IV (Initialization Vector) Counter system is synchronized between the client and server. The IV for each operation is modified by a long counter that increments with every doFinal() call. This ensures that every single packet uses a unique IV, preventing attackers from re-injecting captured packets into the stream.
 
